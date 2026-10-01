@@ -108,6 +108,10 @@ SHA-256:
 - بازیابی مسیر مستقیم Tor برای تمام شبکه‌ها تضمین نمی‌شود و مرزهای قبلی Descriptor Mode/bridge/fallback معتبرند.
 - Relay Onion Control Panel پروژه‌ای مستقل است و مورد تأیید، حمایت یا وابسته به The Tor Project نیست.
 
-## Gate انتشار
+## تأیید Publication
 
-Stable Release فقط زمانی نهایی است که سه artifact frozen با tag `v2.12.0.0-tor-15.0.24` در GitHub Release آپلود شوند و hash نسخه دانلودشده از GitHub با مقادیر فوق تطابق کامل داشته باشد.
+**PASS.** Stable GitHub Release با tag `v2.12.0.0-tor-15.0.24` منتشر شد:
+
+https://github.com/khosravimm/relay-onion-control-panel/releases/tag/v2.12.0.0-tor-15.0.24
+
+هر سه asset از خود GitHub در یک مسیر verification تمیز دوباره دانلود شدند و SHA-256 هر سه دقیقاً با مقادیر frozen محلی تطابق داشت. Release نه Draft است و نه Pre-release.

@@ -102,6 +102,10 @@ Checksum file:
 - Direct Tor route recovery is not guaranteed for every network; existing Descriptor Mode and bridge/fallback claim boundaries remain.
 - Relay Onion Control Panel is independent and is not endorsed, sponsored by, or affiliated with The Tor Project.
 
-## Publication gate
+## Publication verification
 
-Stable release publication is authorized only after the three frozen assets above are uploaded under tag `v2.12.0.0-tor-15.0.24` and the downloaded GitHub assets are re-hashed against these frozen values.
+**PASS.** Stable GitHub Release published under tag `v2.12.0.0-tor-15.0.24`:
+
+https://github.com/khosravimm/relay-onion-control-panel/releases/tag/v2.12.0.0-tor-15.0.24
+
+The three release assets were downloaded again from GitHub into a clean verification directory. All downloaded SHA-256 values matched the frozen local values exactly. The release is not a draft and not a prerelease.

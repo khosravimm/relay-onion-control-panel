@@ -4,7 +4,7 @@
 
 **انتشار سورس عمومی: PASS**
 
-**Stable binary Release: PASS برای Publication؛ تأیید نهایی پس از دانلود مجدد assetهای GitHub و تطبیق SHA-256 انجام می‌شود.**
+**Stable binary Release: PASS و Publication verification نیز PASS است.**
 
 ## شواهد پاس‌شده
 
@@ -64,9 +64,12 @@ SHA-256:
 
 برای جلوگیری از عمومی‌شدن releaseهای خصوصی قدیمی و evidenceهای داخلی workstation، repository خصوصی `tor-control-panel-packaging` به‌عنوان lineage/build archive باقی می‌ماند و repository عمومی `relay-onion-control-panel` baseline پاک‌سازی‌شده محصول را نگهداری می‌کند.
 
-## آخرین Gate
+## Publication نهایی
 
-Tag موردنظر:
+Tag:
 `v2.12.0.0-tor-15.0.24`
 
-Release فقط پس از آپلود سه artifact frozen بالا و دانلود مجدد آن‌ها از GitHub و تطبیق کامل SHA-256 نهایی محسوب می‌شود.
+Release عمومی:
+https://github.com/khosravimm/relay-onion-control-panel/releases/tag/v2.12.0.0-tor-15.0.24
+
+هر سه artifact از GitHub دوباره دانلود و SHA-256 آن‌ها با مقادیر frozen مقایسه شد؛ هر سه تطابق کامل داشتند. Release نه Draft است و نه Pre-release. بنابراین فرایند Release 2.12.0.0 از Build تا Publication verification **کامل و PASS** است.
