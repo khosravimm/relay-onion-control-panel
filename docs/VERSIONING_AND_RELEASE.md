@@ -9,7 +9,7 @@ Relay Onion Control Panel uses `MAJOR.MINOR.PATCH.BUILD`. This is not claimed to
 - **PATCH** — backward-compatible defect or narrowly scoped functional correction that merits a product release.
 - **BUILD** — packaging/rebuild-only revision when source behavior is unchanged; it still requires reproducible evidence.
 
-Existing owner decision `DEC-TCP-005` established that substantial changes receive a product version bump rather than an `R<n>` suffix. The 2.7 through 2.11 history follows that rule. The public rebrand is therefore **2.12.0.0**.
+The established project history uses a product-version bump for substantial changes rather than an `R<n>` suffix. The 2.7 through 2.11 history follows that rule. The public rebrand is therefore **2.12.0.0**. The corresponding historical owner decision remains preserved in the private lineage archive.
 
 ## Historical releases
 
