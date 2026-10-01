@@ -1,0 +1,46 @@
+# Build and release outputs
+build/
+release/
+staging/
+smoke/
+downloads/
+*.zip
+*.7z
+*.tar.gz
+*.exe
+!source/TorControlPanel_Icon.ico
+!packaging/**/*.iss
+
+# Runtime/private data
+Data/User/
+**/Data/User/
+*.log
+*.tmp
+lock*
+*.backup
+
+# Delphi local files
+*.dcu
+*.local
+*.identcache
+__history/
+*.res
+!source/TorControlPanel.res
+
+# OS/editor
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/
+
+
+__Temp/
+**/__Temp/
+# Local qualification outputs
+tests/*.exe
+tests/*.dcu
+tests/win32/
+tests/ui-stage-*/
+tests/mcp-runtime-stage/
+tests/mcp-wire/
+tests/mcp-adapter-compile/
