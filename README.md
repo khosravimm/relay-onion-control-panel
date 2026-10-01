@@ -18,7 +18,7 @@ The upstream MIT license is preserved verbatim in [`LICENSE`](LICENSE) and [`LIC
 
 ## Current release line
 
-The first public source line under the Relay Onion Control Panel identity is **2.12.0.0**. A stable binary 2.12 release remains gated on a fresh build and release qualification; source publication does not imply binary qualification. The executable filename remains `TorControlPanel.exe` for backward compatibility; this filename does not imply affiliation with The Tor Project.
+The first public release line under the Relay Onion Control Panel identity is **2.12.0.0**. The stable binary release has passed build, packaging, install/migration, REST/MCP and artifact-integrity qualification. See [`docs/validation/RELEASE_PACKAGE_2.12.0.0.md`](docs/validation/RELEASE_PACKAGE_2.12.0.0.md). The executable filename remains `TorControlPanel.exe` for backward compatibility; this filename does not imply affiliation with The Tor Project.
 
 The current Windows release continues to use Tor Expert Bundle **15.0.24** with Tor runtime **0.4.9.13**, subject to the individual licenses shipped with those components.
 

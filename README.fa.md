@@ -18,7 +18,7 @@
 
 ## نسخه جاری
 
-اولین خط سورس عمومی با هویت **Relay Onion Control Panel** نسخه **2.12.0.0** است. Stable binary Release نسخه 2.12 تا زمان Build و qualification جدید بسته باقی می‌ماند؛ انتشار سورس به معنی تأیید باینری نیست.
+اولین خط Release عمومی با هویت **Relay Onion Control Panel** نسخه **2.12.0.0** است. Stable binary Release این نسخه Build، بسته‌بندی، نصب/مهاجرت، REST/MCP و کنترل صحت artifact را با موفقیت qualification کرده است. گزارش کامل در [`docs/validation/RELEASE_PACKAGE_2.12.0.0_FA.md`](docs/validation/RELEASE_PACKAGE_2.12.0.0_FA.md) ثبت شده است.
 
 نام فایل اجرایی فعلاً برای سازگاری عقب‌رو `TorControlPanel.exe` باقی می‌ماند. باقی ماندن این نام فایل به معنی وابستگی یا تأیید The Tor Project نیست.
 
