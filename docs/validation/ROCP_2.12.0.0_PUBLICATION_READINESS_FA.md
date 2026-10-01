@@ -2,7 +2,7 @@
 
 ## نتیجه
 
-**انتشار سورس عمومی: PASS با محدودیت مشخص**  
+**انتشار سورس عمومی: PASS با محدودیت مشخص**
 **Stable binary Release: BLOCKED تا Build/Qualification جدید**
 
 ## شواهد پاس‌شده
