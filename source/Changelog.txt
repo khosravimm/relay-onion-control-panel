@@ -1,3 +1,7 @@
+2.13.1.0 (scanner network-integration suspend):
+- Temporarily suspends Proxy/TUN during node reachability checks, ping measurement and scanner runs, then restores the previous mode after completion.
+- Preserves user changes made during scanner execution by skipping automatic restore when the operator changes Proxy/TUN manually.
+
 2.13.0.0 (Network integration controls):
 - Added mutually exclusive Proxy and TUN (LAN) modes in the compact UI.
 - Added sing-box based system proxy and TUN runtime integration with rollback handling.

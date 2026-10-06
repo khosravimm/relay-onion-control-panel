@@ -1702,6 +1702,10 @@ type
     FTunEnabled: Boolean;
     FSystemProxyState: Integer;
     FTunState: Integer;
+    FNetworkIntegrationSuspended: Boolean;
+    FNetworkIntegrationSuspendProxy: Boolean;
+    FNetworkIntegrationSuspendTun: Boolean;
+    FNetworkIntegrationSuspendUserChanged: Boolean;
     FNetworkIntegration: TNetworkIntegrationManager;
     lbSystemProxyCaption: TLabel;
     btnSystemProxyToggle: TBitBtn;
@@ -1762,6 +1766,8 @@ type
     procedure ApplyNetworkIntegrationDesired;
     procedure LoadNetworkIntegrationPreferences(Ini: TMemIniFile);
     procedure SaveNetworkIntegrationPreferences;
+    procedure SuspendNetworkIntegrationForScanner;
+    procedure RestoreNetworkIntegrationAfterScanner;
     procedure SystemProxyToggleClick(Sender: TObject);
     procedure TunToggleClick(Sender: TObject);
     procedure WMExitSizeMove(var msg: TMessage); message WM_EXITSIZEMOVE;
@@ -13539,6 +13545,7 @@ begin
         CurrentAutoScanPurpose := spNone;
 
       InitScanType := ScanType;
+      SuspendNetworkIntegrationForScanner;
 
       case ScanStage of
         1: ScanStart(ScanType, CurrentScanPurpose);
@@ -13755,6 +13762,7 @@ begin
         if ConnectState = 0 then
           SaveNetworkCache;
       end;
+      RestoreNetworkIntegrationAfterScanner;
       ScanStage := 0;
       UpdateScannerControls;
       CurrentScanPurpose := spNone;
@@ -20539,9 +20547,74 @@ end;
 
 
 
+procedure TTcp.SuspendNetworkIntegrationForScanner;
+var
+  ErrorText: string;
+begin
+  if FNetworkIntegrationSuspended then
+    Exit;
+  FNetworkIntegrationSuspendProxy := FSystemProxyEnabled;
+  FNetworkIntegrationSuspendTun := FTunEnabled;
+  FNetworkIntegrationSuspendUserChanged := False;
+  if not FNetworkIntegrationSuspendProxy and not FNetworkIntegrationSuspendTun then
+    Exit;
+  FNetworkIntegrationSuspended := True;
+  FSystemProxyEnabled := False;
+  FTunEnabled := False;
+  FSystemProxyState := NI_STOPPING;
+  FTunState := NI_STOPPING;
+  UpdateNetworkIntegrationControls;
+  if Assigned(FNetworkIntegration) then
+  begin
+    if FNetworkIntegration.Apply(False, False, LOOPBACK_ADDRESS, udSOCKSPort.Position, ErrorText) then
+    begin
+      FSystemProxyState := NI_OFF;
+      FTunState := NI_OFF;
+    end
+    else
+    begin
+      FSystemProxyState := NI_ERROR;
+      FTunState := NI_ERROR;
+      ShowBalloon(ErrorText, 'Network integration', True, mtError);
+    end;
+  end;
+  UpdateNetworkIntegrationControls;
+end;
+
+procedure TTcp.RestoreNetworkIntegrationAfterScanner;
+begin
+  if not FNetworkIntegrationSuspended then
+    Exit;
+  FNetworkIntegrationSuspended := False;
+  if FNetworkIntegrationSuspendUserChanged then
+  begin
+    FNetworkIntegrationSuspendProxy := False;
+    FNetworkIntegrationSuspendTun := False;
+    FNetworkIntegrationSuspendUserChanged := False;
+    Exit;
+  end;
+  FSystemProxyEnabled := FNetworkIntegrationSuspendProxy;
+  FTunEnabled := FNetworkIntegrationSuspendTun;
+  FNetworkIntegrationSuspendProxy := False;
+  FNetworkIntegrationSuspendTun := False;
+  FNetworkIntegrationSuspendUserChanged := False;
+  if FSystemProxyEnabled then
+    FSystemProxyState := NI_STARTING
+  else
+    FSystemProxyState := NI_OFF;
+  if FTunEnabled then
+    FTunState := NI_STARTING
+  else
+    FTunState := NI_OFF;
+  UpdateNetworkIntegrationControls;
+  ApplyNetworkIntegrationDesired;
+end;
 procedure TTcp.SystemProxyToggleClick(Sender: TObject);
 
 begin
+
+  if FNetworkIntegrationSuspended then
+    FNetworkIntegrationSuspendUserChanged := True;
 
   if FSystemProxyEnabled then
   begin
@@ -20569,6 +20642,9 @@ end;
 procedure TTcp.TunToggleClick(Sender: TObject);
 
 begin
+
+  if FNetworkIntegrationSuspended then
+    FNetworkIntegrationSuspendUserChanged := True;
 
   if FTunEnabled then
   begin
