@@ -1,3 +1,7 @@
+2.13.4.0 (temporarily disable TUN):
+- Disabled TUN (LAN) in the UI and runtime because of unresolved elevation/runtime stability issues.
+- Proxy mode remains available.
+
 2.13.3.0 (explicit TUN elevation guard):
   - Allow UAC/elevation for TUN only from direct user TUN toggle clicks.
   - Block automatic TUN elevation from recovery/reapply paths to prevent repeated UAC prompts during high-traffic tests.

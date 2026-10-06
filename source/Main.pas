@@ -1873,6 +1873,7 @@ const
   NI_STARTING = 1;
   NI_ACTIVE = 2;
   NI_STOPPING = 3;
+  TUN_FEATURE_ENABLED = False;
   NI_ERROR = 4;
 
 procedure TTcp.WMUpdateUIState(var Message: TMessage);
@@ -20243,6 +20244,13 @@ begin
   btnTunToggle.Width := Round(102 * Scale);
   btnTunToggle.Height := Round(22 * Scale);
   btnTunToggle.Caption := 'TUN (LAN)';
+  btnTunToggle.Enabled := TUN_FEATURE_ENABLED;
+  btnTunToggle.Hint := 'TUN (LAN) - disabled until stability fixes are completed';
+  if not TUN_FEATURE_ENABLED then
+  begin
+    FTunEnabled := False;
+    FTunState := NI_OFF;
+  end;
   btnTunToggle.OnClick := TunToggleClick;
   btnTunToggle.ShowHint := True;
   btnTunToggle.Hint := 'TUN mode (LAN preserved)';
@@ -20320,6 +20328,13 @@ begin
 
   btnSystemProxyToggle.Caption := 'Proxy';
   btnTunToggle.Caption := 'TUN (LAN)';
+  btnTunToggle.Enabled := TUN_FEATURE_ENABLED;
+  btnTunToggle.Hint := 'TUN (LAN) - disabled until stability fixes are completed';
+  if not TUN_FEATURE_ENABLED then
+  begin
+    FTunEnabled := False;
+    FTunState := NI_OFF;
+  end;
 
   SetNetworkButtonLamp(btnSystemProxyToggle, FSystemProxyState);
   SetNetworkButtonLamp(btnTunToggle, FTunState);
@@ -20502,7 +20517,7 @@ begin
 
   FSystemProxyEnabled := Ini.ReadBool('NetworkIntegration', 'SystemProxyEnabled', False);
 
-  FTunEnabled := Ini.ReadBool('NetworkIntegration', 'TunEnabled', False);
+  FTunEnabled := TUN_FEATURE_ENABLED and Ini.ReadBool('NetworkIntegration', 'TunEnabled', False);
 
   if FSystemProxyEnabled and FTunEnabled then
     FSystemProxyEnabled := False;
@@ -20535,7 +20550,7 @@ begin
 
     Ini.WriteBool('NetworkIntegration', 'SystemProxyEnabled', FSystemProxyEnabled);
 
-    Ini.WriteBool('NetworkIntegration', 'TunEnabled', FTunEnabled);
+    Ini.WriteBool('NetworkIntegration', 'TunEnabled', TUN_FEATURE_ENABLED and FTunEnabled);
 
     Ini.UpdateFile;
 
@@ -20556,7 +20571,7 @@ begin
   if FNetworkIntegrationSuspended then
     Exit;
   FNetworkIntegrationSuspendProxy := FSystemProxyEnabled;
-  FNetworkIntegrationSuspendTun := FTunEnabled;
+  FNetworkIntegrationSuspendTun := TUN_FEATURE_ENABLED and FTunEnabled;
   FNetworkIntegrationSuspendUserChanged := False;
   if not FNetworkIntegrationSuspendProxy and not FNetworkIntegrationSuspendTun then
     Exit;
@@ -20651,6 +20666,14 @@ end;
 procedure TTcp.TunToggleClick(Sender: TObject);
 
 begin
+  if not TUN_FEATURE_ENABLED then
+  begin
+    FTunEnabled := False;
+    FTunState := NI_OFF;
+    UpdateNetworkIntegrationControls;
+    ShowBalloon('TUN mode is temporarily disabled because of stability issues.', 'Network integration', False, mtInfo);
+    Exit;
+  end;
 
   if FNetworkIntegrationSuspended then
     FNetworkIntegrationSuspendUserChanged := True;
