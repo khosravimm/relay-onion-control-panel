@@ -1,3 +1,6 @@
+2.13.2.0 (TUN restore UAC handling):
+- Prevented automatic TUN restore after scanner/ping suspension from repeatedly triggering Windows elevation prompts.
+- Proxy mode still restores automatically after scanner suspension; TUN now requires explicit user click to re-enable.
 2.13.1.0 (scanner network-integration suspend):
 - Temporarily suspends Proxy/TUN during node reachability checks, ping measurement and scanner runs, then restores the previous mode after completion.
 - Preserves user changes made during scanner execution by skipping automatic restore when the operator changes Proxy/TUN manually.

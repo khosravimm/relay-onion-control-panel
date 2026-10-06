@@ -20594,7 +20594,17 @@ begin
     Exit;
   end;
   FSystemProxyEnabled := FNetworkIntegrationSuspendProxy;
-  FTunEnabled := FNetworkIntegrationSuspendTun;
+  if FNetworkIntegrationSuspendTun then
+  begin
+    // Do not auto-restore TUN after scanner suspension. TUN startup requires elevation
+    // on Windows; auto-restore would repeatedly trigger UAC. Leave it off and require
+    // an explicit user click to re-enable TUN.
+    FTunEnabled := False;
+    ShowBalloon('TUN was temporarily disabled for node reachability/ping checks. Click TUN (LAN) to re-enable it.',
+      'Network integration', False, mtInfo);
+  end
+  else
+    FTunEnabled := False;
   FNetworkIntegrationSuspendProxy := False;
   FNetworkIntegrationSuspendTun := False;
   FNetworkIntegrationSuspendUserChanged := False;
@@ -20602,10 +20612,7 @@ begin
     FSystemProxyState := NI_STARTING
   else
     FSystemProxyState := NI_OFF;
-  if FTunEnabled then
-    FTunState := NI_STARTING
-  else
-    FTunState := NI_OFF;
+  FTunState := NI_OFF;
   UpdateNetworkIntegrationControls;
   ApplyNetworkIntegrationDesired;
 end;
