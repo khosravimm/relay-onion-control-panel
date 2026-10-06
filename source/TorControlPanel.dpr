@@ -13,7 +13,8 @@ uses
   ConstData in 'ConstData.pas',
   ClassData in 'ClassData.pas',
   MachineInterface in 'MachineInterface.pas',
-  TcpMcp in 'TcpMcp.pas';
+  TcpMcp in 'TcpMcp.pas',
+  NetworkIntegration in 'NetworkIntegration.pas';
 
 var
   i, MaxParams: Integer;

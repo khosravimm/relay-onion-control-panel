@@ -38,6 +38,15 @@ Prepare:
 
 The package must contain only distributable application/runtime files. Operational `Data\User`, private bridges, credentials, plaintext API keys and real profiles are prohibited.
 
+### Network integration runtime
+
+System Proxy and TUN use a pinned, separately distributed `sing-box.exe` runtime. Do not commit the upstream binary to this repository. Before packaging, fetch the qualified runtime with:
+
+```powershell
+.\tools\Fetch-SingBox.ps1
+```
+
+The script downloads the approved Windows amd64 archive, verifies its pinned SHA-256, and places `sing-box.exe`, its GPL license, and version metadata under `optional\sing-box` in the release tree. Any sing-box version change requires a new qualification and an updated pinned hash.
 ## Installer build
 
 For 2.12.0.0:

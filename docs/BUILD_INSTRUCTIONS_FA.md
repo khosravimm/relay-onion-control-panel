@@ -38,6 +38,15 @@ cmd /d /s /c "call `"$env:ROCP_RAD_RS_VARS`" && cd /d `"$repo\source`" && msbuil
 
 قرار دادن `Data\User` عملیاتی، bridge خصوصی، credential، API key خام یا profile واقعی در بسته ممنوع است.
 
+### Network integration runtime
+
+System Proxy و TUN از runtime جداگانه و pin شده‌ی `sing-box.exe` استفاده می‌کنند. باینری upstream نباید در source control commit شود. قبل از packaging اجرا کنید:
+
+```powershell
+.\tools\Fetch-SingBox.ps1
+```
+
+اسکریپت نسخه مجاز Windows amd64 را دریافت می‌کند، SHA-256 pin شده را کنترل می‌کند و `sing-box.exe`، مجوز GPL و metadata نسخه را زیر `optional\sing-box` در release tree قرار می‌دهد. هر تغییر نسخه sing-box نیازمند qualification و hash جدید است.
 ## ساخت Installer
 
 برای نسخه 2.12.0.0:

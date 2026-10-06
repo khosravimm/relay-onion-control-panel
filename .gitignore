@@ -26,6 +26,7 @@ lock*
 __history/
 *.res
 !source/TorControlPanel.res
+!source/TorControlPanel.icons.res
 
 # OS/editor
 Thumbs.db
@@ -44,3 +45,5 @@ tests/ui-stage-*/
 tests/mcp-runtime-stage/
 tests/mcp-wire/
 tests/mcp-adapter-compile/
+source/User/
+source/optional/

@@ -78,6 +78,11 @@ type
     TorVersion: string;
     ConnectState: Integer;
     BootstrapPercent: Integer;
+    NetworkMode: string;
+    SystemProxyEnabled: Boolean;
+    TunEnabled: Boolean;
+    SystemProxyState: Integer;
+    TunState: Integer;
   end;
 
   TTcpMachineService = class
@@ -89,6 +94,7 @@ type
     constructor Create(ASettings: TTcpMachineSettings);
     destructor Destroy; override;
     procedure UpdateStatus(const AProgramVersion, ATorVersion: string; AConnectState, ABootstrapPercent: Integer);
+    procedure UpdateNetworkIntegrationStatus(const AMode: string; ASystemProxyEnabled, ATunEnabled: Boolean; ASystemProxyState, ATunState: Integer);
     function GetStatus: TTcpMachineStatus;
     function IsRequestAuthorized(const PeerAddress, PresentedKey: string): Boolean;
     property Settings: TTcpMachineSettings read FSettings;
@@ -379,6 +385,11 @@ begin
   FStatus.TorVersion := '';
   FStatus.ConnectState := 0;
   FStatus.BootstrapPercent := 0;
+  FStatus.NetworkMode := 'off';
+  FStatus.SystemProxyEnabled := False;
+  FStatus.TunEnabled := False;
+  FStatus.SystemProxyState := 0;
+  FStatus.TunState := 0;
 end;
 
 destructor TTcpMachineService.Destroy;
@@ -401,6 +412,21 @@ begin
       FStatus.BootstrapPercent := 100
     else
       FStatus.BootstrapPercent := ABootstrapPercent;
+  finally
+    FStatusLock.Release;
+  end;
+end;
+
+procedure TTcpMachineService.UpdateNetworkIntegrationStatus(const AMode: string;
+  ASystemProxyEnabled, ATunEnabled: Boolean; ASystemProxyState, ATunState: Integer);
+begin
+  FStatusLock.Acquire;
+  try
+    FStatus.NetworkMode := AMode;
+    FStatus.SystemProxyEnabled := ASystemProxyEnabled;
+    FStatus.TunEnabled := ATunEnabled;
+    FStatus.SystemProxyState := ASystemProxyState;
+    FStatus.TunState := ATunState;
   finally
     FStatusLock.Release;
   end;
@@ -520,8 +546,10 @@ begin
   begin
     StatusCode := 200;
     Reason := 'OK';
-    Exit(Format('{"program_version":"%s","tor_version":"%s","connect_state":%d,"bootstrap_percent":%d}',
-      [JsonEscape(S.ProgramVersion), JsonEscape(S.TorVersion), S.ConnectState, S.BootstrapPercent]));
+    Exit(Format('{"program_version":"%s","tor_version":"%s","connect_state":%d,"bootstrap_percent":%d,"network_integration":{"mode":"%s","system_proxy":{"enabled":%s,"state":%d},"tun":{"enabled":%s,"state":%d}}}',
+      [JsonEscape(S.ProgramVersion), JsonEscape(S.TorVersion), S.ConnectState, S.BootstrapPercent,
+       JsonEscape(S.NetworkMode), IfThen(S.SystemProxyEnabled, 'true', 'false'), S.SystemProxyState,
+       IfThen(S.TunEnabled, 'true', 'false'), S.TunState]));
   end;
 
   if SameText(RequestPath, '/api/v1/health') then
@@ -532,8 +560,10 @@ begin
       TorReady := 'false';
     StatusCode := 200;
     Reason := 'OK';
-    Exit(Format('{"status":"ok","api":"ready","tor":{"connect_state":%d,"bootstrap_percent":%d,"ready":%s}}',
-      [S.ConnectState, S.BootstrapPercent, TorReady]));
+    Exit(Format('{"status":"ok","api":"ready","tor":{"connect_state":%d,"bootstrap_percent":%d,"ready":%s},"network_integration":{"mode":"%s","system_proxy":{"enabled":%s,"state":%d},"tun":{"enabled":%s,"state":%d}}}',
+      [S.ConnectState, S.BootstrapPercent, TorReady, JsonEscape(S.NetworkMode),
+       IfThen(S.SystemProxyEnabled, 'true', 'false'), S.SystemProxyState,
+       IfThen(S.TunEnabled, 'true', 'false'), S.TunState]));
   end;
 
   StatusCode := 404;

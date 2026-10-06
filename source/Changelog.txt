@@ -1,3 +1,7 @@
+2.13.0.0 (Network integration controls):
+- Added mutually exclusive Proxy and TUN (LAN) modes in the compact UI.
+- Added sing-box based system proxy and TUN runtime integration with rollback handling.
+- Added red/green lamp-style mode buttons and installer packaging for the optional sing-box runtime.
 2.12.0.0 (Relay Onion Control Panel public rebrand):
 - Renamed the public product identity to Relay Onion Control Panel.
 - Preserved the original Tor Control Panel MIT license and upstream attribution.

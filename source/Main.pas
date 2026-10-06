@@ -9,7 +9,8 @@ uses
   System.DateUtils, System.Math, System.IOUtils, Vcl.Forms, System.Classes, System.Masks,
   Vcl.ImgList, Vcl.Controls, Vcl.ExtCtrls, Vcl.Menus, Vcl.StdCtrls, Vcl.Grids, Vcl.ComCtrls,
   Vcl.Clipbrd, Vcl.Dialogs, Vcl.Graphics, Vcl.Themes, Vcl.Buttons, blcksock, dnssend, httpsend,
-  pingsend, synautil, ConstData, Functions, Addons, Languages, ClassData, MachineInterface, TcpMcp;
+  pingsend, synautil, ConstData, Functions, Addons, Languages, ClassData, MachineInterface, TcpMcp,
+  NetworkIntegration;
 
 type
   TUserGrid = class(TCustomGrid);
@@ -1697,6 +1698,19 @@ type
     procedure edFilterQueryChange(Sender: TObject);
     procedure sbOpenTransportHandlerClick(Sender: TObject);
   private
+    FSystemProxyEnabled: Boolean;
+    FTunEnabled: Boolean;
+    FSystemProxyState: Integer;
+    FTunState: Integer;
+    FNetworkIntegration: TNetworkIntegrationManager;
+    lbSystemProxyCaption: TLabel;
+    btnSystemProxyToggle: TBitBtn;
+    lbSystemProxyStatus: TLabel;
+    lbTunCaption: TLabel;
+    btnTunToggle: TBitBtn;
+    lbTunStatus: TLabel;
+    shpSystemProxyLamp: TShape;
+    shpTunLamp: TShape;
     FMachineSettings: TTcpMachineSettings;
     FMachineService: TTcpMachineService;
     FRestServer: TTcpRestServer;
@@ -1743,6 +1757,13 @@ type
     procedure MachineInterfaceChange(Sender: TObject);
     procedure GenerateApiKeyClick(Sender: TObject);
     procedure CopyGeneratedApiKeyClick(Sender: TObject);
+    procedure CreateNetworkIntegrationControls;
+    procedure UpdateNetworkIntegrationControls;
+    procedure ApplyNetworkIntegrationDesired;
+    procedure LoadNetworkIntegrationPreferences(Ini: TMemIniFile);
+    procedure SaveNetworkIntegrationPreferences;
+    procedure SystemProxyToggleClick(Sender: TObject);
+    procedure TunToggleClick(Sender: TObject);
     procedure WMExitSizeMove(var msg: TMessage); message WM_EXITSIZEMOVE;
     procedure WMDpiChanged(var msg: TWMDpi); message WM_DPICHANGED;
     procedure WMQueryEndSession(var Message: TWMQueryEndSession); message WM_QUERYENDSESSION;
@@ -1839,6 +1860,13 @@ implementation
 
 {$R *.dfm}
 {$R TorControlPanel.icons.res}
+
+const
+  NI_OFF = 0;
+  NI_STARTING = 1;
+  NI_ACTIVE = 2;
+  NI_STOPPING = 3;
+  NI_ERROR = 4;
 
 procedure TTcp.WMUpdateUIState(var Message: TMessage);
 begin
@@ -3584,6 +3612,7 @@ begin
         Tcp.SetOptionsEnable(True);
         Tcp.GetServerInfo;
         Tcp.SendDataThroughProxy;
+        Tcp.ApplyNetworkIntegrationDesired;
       end;
       Exit;
     end;
@@ -3639,6 +3668,7 @@ begin
         CircuitsUpdated := True;
         if CircuitID = Circuit then
           Tcp.SendDataThroughProxy;
+        Tcp.ApplyNetworkIntegrationDesired;
       end;
     end;
     Exit;
@@ -6192,7 +6222,15 @@ end;
 procedure TTcp.StopTor(SkipMessages: Boolean = False);
 var
   BridgesFullUpdate: Boolean;
+  NetworkError: string;
 begin
+  if Assigned(FNetworkIntegration) then
+  begin
+    FNetworkIntegration.Apply(False, False, LOOPBACK_ADDRESS, udSOCKSPort.Position, NetworkError);
+    FSystemProxyState := NI_OFF;
+    FTunState := NI_OFF;
+    UpdateNetworkIntegrationControls;
+  end;
   ProcessExists(TorMainProcess, True, True);
   if Assigned(Controller) then
     Controller.Terminate;
@@ -8587,6 +8625,7 @@ begin
     SaveDescriptorMode(ini);
     CheckConfluxControls;
     LoadMachineInterfaceSettings(ini);
+    LoadNetworkIntegrationPreferences(ini);
 
     FormatCodesOnExtract := GetSettings('Extractor', 'FormatCodesOnExtract', True, ini);
     FormatIPv6OnExtract := GetSettings('Extractor', 'FormatIPv6OnExtract', True, ini);
@@ -12899,7 +12938,7 @@ begin
   if FormSize = 0 then
   begin
     H := Round(91 * Scale);
-    W := Round(335 * Scale);
+    W := Round(430 * Scale);
   end
   else
   begin
@@ -20141,6 +20180,419 @@ begin
   if FGeneratedApiKey <> '' then
     Clipboard.AsText := FGeneratedApiKey;
 end;
+procedure TTcp.CreateNetworkIntegrationControls;
+begin
+  FSystemProxyEnabled := False;
+  FTunEnabled := False;
+  FSystemProxyState := NI_OFF;
+  FTunState := NI_OFF;
+
+  lbSystemProxyCaption := TLabel.Create(Self);
+  lbSystemProxyCaption.Parent := paButtons;
+  lbSystemProxyCaption.Visible := False;
+
+  lbTunCaption := TLabel.Create(Self);
+  lbTunCaption.Parent := paButtons;
+  lbTunCaption.Visible := False;
+
+  lbSystemProxyStatus := TLabel.Create(Self);
+  lbSystemProxyStatus.Parent := paButtons;
+  lbSystemProxyStatus.Visible := False;
+
+  lbTunStatus := TLabel.Create(Self);
+  lbTunStatus.Parent := paButtons;
+  lbTunStatus.Visible := False;
+
+  btnSystemProxyToggle := TBitBtn.Create(Self);
+  btnSystemProxyToggle.Parent := paButtons;
+  btnSystemProxyToggle.Left := Round(323 * Scale);
+  btnSystemProxyToggle.Top := Round(3 * Scale);
+  btnSystemProxyToggle.Width := Round(102 * Scale);
+  btnSystemProxyToggle.Height := Round(22 * Scale);
+  btnSystemProxyToggle.Caption := 'Proxy';
+  btnSystemProxyToggle.OnClick := SystemProxyToggleClick;
+  btnSystemProxyToggle.ShowHint := True;
+  btnSystemProxyToggle.Hint := 'System Proxy';
+
+  shpSystemProxyLamp := TShape.Create(Self);
+  shpSystemProxyLamp.Parent := paButtons;
+  shpSystemProxyLamp.Visible := False;
+  shpSystemProxyLamp.Shape := stCircle;
+  shpSystemProxyLamp.Left := btnSystemProxyToggle.Left + Round(10 * Scale);
+  shpSystemProxyLamp.Top := btnSystemProxyToggle.Top + Round(6 * Scale);
+  shpSystemProxyLamp.Width := Round(10 * Scale);
+  shpSystemProxyLamp.Height := Round(10 * Scale);
+  shpSystemProxyLamp.Pen.Color := clMaroon;
+  shpSystemProxyLamp.Brush.Color := clRed;  shpSystemProxyLamp.Hint := btnSystemProxyToggle.Hint;
+  shpSystemProxyLamp.ShowHint := True;
+  shpSystemProxyLamp.BringToFront;
+
+  btnTunToggle := TBitBtn.Create(Self);
+  btnTunToggle.Parent := paButtons;
+  btnTunToggle.Left := Round(323 * Scale);
+  btnTunToggle.Top := Round(28 * Scale);
+  btnTunToggle.Width := Round(102 * Scale);
+  btnTunToggle.Height := Round(22 * Scale);
+  btnTunToggle.Caption := 'TUN (LAN)';
+  btnTunToggle.OnClick := TunToggleClick;
+  btnTunToggle.ShowHint := True;
+  btnTunToggle.Hint := 'TUN mode (LAN preserved)';
+
+  shpTunLamp := TShape.Create(Self);
+  shpTunLamp.Parent := paButtons;
+  shpTunLamp.Visible := False;
+  shpTunLamp.Shape := stCircle;
+  shpTunLamp.Left := btnTunToggle.Left + Round(10 * Scale);
+  shpTunLamp.Top := btnTunToggle.Top + Round(6 * Scale);
+  shpTunLamp.Width := Round(10 * Scale);
+  shpTunLamp.Height := Round(10 * Scale);
+  shpTunLamp.Pen.Color := clMaroon;
+  shpTunLamp.Brush.Color := clRed;  shpTunLamp.Hint := btnTunToggle.Hint;
+  shpTunLamp.ShowHint := True;
+  shpTunLamp.BringToFront;
+
+  UpdateNetworkIntegrationControls;
+end;
+function CreateNetworkLampGlyph(AColor: TColor): TBitmap;
+var
+  R: TRect;
+begin
+  Result := TBitmap.Create;
+  Result.SetSize(18, 18);
+  Result.Transparent := True;
+  Result.TransparentColor := clFuchsia;
+  Result.Canvas.Brush.Color := clFuchsia;
+  Result.Canvas.FillRect(Rect(0, 0, Result.Width, Result.Height));
+
+  R := Rect(3, 3, 15, 15);
+  Result.Canvas.Pen.Color := clWhite;
+  Result.Canvas.Brush.Color := clWhite;
+  Result.Canvas.Ellipse(R.Left, R.Top, R.Right, R.Bottom);
+
+  R := Rect(4, 4, 14, 14);
+  Result.Canvas.Pen.Color := clGray;
+  Result.Canvas.Brush.Color := AColor;
+  Result.Canvas.Ellipse(R.Left, R.Top, R.Right, R.Bottom);
+
+  Result.Canvas.Pen.Color := clWhite;
+  Result.Canvas.Brush.Color := clWhite;
+  Result.Canvas.Ellipse(6, 5, 9, 8);
+end;
+
+procedure SetNetworkButtonLamp(Btn: TBitBtn; State: Integer);
+var
+  Bmp: TBitmap;
+  Color: TColor;
+begin
+  case State of
+    NI_ACTIVE: Color := clLime;
+    NI_STARTING, NI_STOPPING: Color := clOlive;
+    else Color := clRed;
+  end;
+
+  Bmp := CreateNetworkLampGlyph(Color);
+  try
+    Btn.Glyph.Assign(Bmp);
+  finally
+    Bmp.Free;
+  end;
+  Btn.NumGlyphs := 1;
+  Btn.Layout := blGlyphLeft;
+  Btn.Spacing := 6;
+  Btn.Margin := 7;
+end;
+
+procedure TTcp.UpdateNetworkIntegrationControls;
+var
+  ModeText: string;
+begin
+  if not Assigned(btnSystemProxyToggle) then
+    Exit;
+
+  btnSystemProxyToggle.Caption := 'Proxy';
+  btnTunToggle.Caption := 'TUN (LAN)';
+
+  SetNetworkButtonLamp(btnSystemProxyToggle, FSystemProxyState);
+  SetNetworkButtonLamp(btnTunToggle, FTunState);
+
+  btnSystemProxyToggle.Font.Style := [];
+  btnTunToggle.Font.Style := [];
+  if FSystemProxyState = NI_ACTIVE then
+    btnSystemProxyToggle.Font.Style := [fsBold];
+  if FTunState = NI_ACTIVE then
+    btnTunToggle.Font.Style := [fsBold];
+
+  if Assigned(FMachineService) then
+  begin
+    if FTunEnabled then
+      ModeText := 'tun'
+    else if FSystemProxyEnabled then
+      ModeText := 'proxy'
+    else
+      ModeText := 'off';
+    FMachineService.UpdateNetworkIntegrationStatus(ModeText, FSystemProxyEnabled, FTunEnabled,
+      FSystemProxyState, FTunState);
+  end;
+end;
+
+
+procedure TTcp.ApplyNetworkIntegrationDesired;
+
+var
+
+  ErrorText, SocksHost: string;
+
+  SocksPort: Word;
+
+begin
+
+  if not Assigned(FNetworkIntegration) then
+
+    Exit;
+
+
+
+  if not FSystemProxyEnabled and not FTunEnabled then
+
+  begin
+
+    if FNetworkIntegration.Apply(False, False, LOOPBACK_ADDRESS, udSOCKSPort.Position, ErrorText) then
+
+    begin
+
+      FSystemProxyState := NI_OFF;
+
+      FTunState := NI_OFF;
+
+    end
+
+    else
+
+    begin
+
+      FSystemProxyState := NI_ERROR;
+
+      FTunState := NI_ERROR;
+
+      ShowBalloon(ErrorText, 'Network integration', True, mtError);
+
+    end;
+
+    UpdateNetworkIntegrationControls;
+
+    Exit;
+
+  end;
+
+
+
+  if not cbUseSOCKS.Checked then
+
+  begin
+
+    cbUseSOCKS.Checked := True;
+
+    ApplyOptions(True);
+
+    FSystemProxyState := IfThen(FSystemProxyEnabled, NI_STARTING, NI_OFF);
+
+    FTunState := IfThen(FTunEnabled, NI_STARTING, NI_OFF);
+
+    UpdateNetworkIntegrationControls;
+
+    if ConnectState = 0 then
+
+      StartTor
+
+    else
+
+      RestartTor;
+
+    Exit;
+
+  end;
+
+
+
+  if ConnectState = 0 then
+
+  begin
+
+    FSystemProxyState := IfThen(FSystemProxyEnabled, NI_STARTING, NI_OFF);
+
+    FTunState := IfThen(FTunEnabled, NI_STARTING, NI_OFF);
+
+    UpdateNetworkIntegrationControls;
+
+    StartTor;
+
+    Exit;
+
+  end;
+
+
+
+  if ConnectState <> 2 then
+
+  begin
+
+    FSystemProxyState := IfThen(FSystemProxyEnabled, NI_STARTING, NI_OFF);
+
+    FTunState := IfThen(FTunEnabled, NI_STARTING, NI_OFF);
+
+    UpdateNetworkIntegrationControls;
+
+    Exit;
+
+  end;
+
+
+
+  SocksHost := GetHost(cbxSOCKSHost.Text);
+
+  if (SocksHost = '') or (SocksHost = '0.0.0.0') or (SocksHost = '::') then
+
+    SocksHost := LOOPBACK_ADDRESS;
+
+  SocksPort := udSOCKSPort.Position;
+
+
+
+  if FNetworkIntegration.Apply(FSystemProxyEnabled, FTunEnabled, SocksHost, SocksPort, ErrorText) then
+
+  begin
+
+    if FSystemProxyEnabled then FSystemProxyState := NI_ACTIVE else FSystemProxyState := NI_OFF;
+
+    if FTunEnabled then FTunState := NI_ACTIVE else FTunState := NI_OFF;
+
+  end
+
+  else
+
+  begin
+
+    if FSystemProxyEnabled then FSystemProxyState := NI_ERROR else FSystemProxyState := NI_OFF;
+
+    if FTunEnabled then FTunState := NI_ERROR else FTunState := NI_OFF;
+
+    ShowBalloon(ErrorText, 'Network integration', True, mtError);
+
+  end;
+
+  UpdateNetworkIntegrationControls;
+
+end;
+
+
+
+procedure TTcp.LoadNetworkIntegrationPreferences(Ini: TMemIniFile);
+
+begin
+
+  FSystemProxyEnabled := Ini.ReadBool('NetworkIntegration', 'SystemProxyEnabled', False);
+
+  FTunEnabled := Ini.ReadBool('NetworkIntegration', 'TunEnabled', False);
+
+  if FSystemProxyEnabled and FTunEnabled then
+    FSystemProxyEnabled := False;
+
+  if FSystemProxyEnabled then FSystemProxyState := NI_STARTING else FSystemProxyState := NI_OFF;
+
+  if FTunEnabled then FTunState := NI_STARTING else FTunState := NI_OFF;
+
+  UpdateNetworkIntegrationControls;
+
+end;
+
+
+
+procedure TTcp.SaveNetworkIntegrationPreferences;
+
+var
+
+  Ini: TMemIniFile;
+
+begin
+
+  if UserConfigFile = '' then
+
+    Exit;
+
+  Ini := TMemIniFile.Create(UserConfigFile, TEncoding.UTF8);
+
+  try
+
+    Ini.WriteBool('NetworkIntegration', 'SystemProxyEnabled', FSystemProxyEnabled);
+
+    Ini.WriteBool('NetworkIntegration', 'TunEnabled', FTunEnabled);
+
+    Ini.UpdateFile;
+
+  finally
+
+    Ini.Free;
+
+  end;
+
+end;
+
+
+
+procedure TTcp.SystemProxyToggleClick(Sender: TObject);
+
+begin
+
+  if FSystemProxyEnabled then
+  begin
+    FSystemProxyEnabled := False;
+    FTunEnabled := False;
+  end
+  else
+  begin
+    FSystemProxyEnabled := True;
+    FTunEnabled := False;
+  end;
+
+  SaveNetworkIntegrationPreferences;
+
+  if FSystemProxyEnabled then FSystemProxyState := NI_STARTING else FSystemProxyState := NI_STOPPING;
+  FTunState := NI_OFF;
+
+  UpdateNetworkIntegrationControls;
+
+  ApplyNetworkIntegrationDesired;
+
+end;
+
+
+procedure TTcp.TunToggleClick(Sender: TObject);
+
+begin
+
+  if FTunEnabled then
+  begin
+    FSystemProxyEnabled := False;
+    FTunEnabled := False;
+  end
+  else
+  begin
+    FSystemProxyEnabled := False;
+    FTunEnabled := True;
+  end;
+
+  SaveNetworkIntegrationPreferences;
+
+  FSystemProxyState := NI_OFF;
+  if FTunEnabled then FTunState := NI_STARTING else FTunState := NI_STOPPING;
+
+  UpdateNetworkIntegrationControls;
+
+  ApplyNetworkIntegrationDesired;
+
+end;
+
+
 procedure TTcp.FormCreate(Sender: TObject);
 var
   i: Integer;
@@ -20199,7 +20651,10 @@ begin
   FGeneratedApiKeyHash := '';
   FGeneratedApiKeyId := '';
   FGeneratedApiKeyCreatedAt := '';
+  FNetworkIntegration := TNetworkIntegrationManager.Create(ProgramDir, UserDir, hJob);
+  FNetworkIntegration.RecoverStaleState;
   CreateMachineInterfaceControls;
+  CreateNetworkIntegrationControls;
   TorConfigFile := UserDir + 'torrc';
   TorStateFile := UserDir + 'state';
   NetworkCacheFile := UserDir + 'network-cache';
@@ -20781,6 +21236,7 @@ begin
   EncodingNoBom.Free;
   FreeAndNil(FMcpHost);
   FreeAndNil(FRestServer);
+  FreeAndNil(FNetworkIntegration);
   FreeAndNil(FMachineService);
   FreeAndNil(FMachineSettings);
   ExitProcess(Handle);
