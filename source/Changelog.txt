@@ -1,3 +1,7 @@
+2.13.3.0 (explicit TUN elevation guard):
+  - Allow UAC/elevation for TUN only from direct user TUN toggle clicks.
+  - Block automatic TUN elevation from recovery/reapply paths to prevent repeated UAC prompts during high-traffic tests.
+
 2.13.2.0 (TUN restore UAC handling):
 - Prevented automatic TUN restore after scanner/ping suspension from repeatedly triggering Windows elevation prompts.
 - Proxy mode still restores automatically after scanner suspension; TUN now requires explicit user click to re-enable.

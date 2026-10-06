@@ -1706,6 +1706,7 @@ type
     FNetworkIntegrationSuspendProxy: Boolean;
     FNetworkIntegrationSuspendTun: Boolean;
     FNetworkIntegrationSuspendUserChanged: Boolean;
+    FAllowTunElevationOnce: Boolean;
     FNetworkIntegration: TNetworkIntegrationManager;
     lbSystemProxyCaption: TLabel;
     btnSystemProxyToggle: TBitBtn;
@@ -6232,7 +6233,7 @@ var
 begin
   if Assigned(FNetworkIntegration) then
   begin
-    FNetworkIntegration.Apply(False, False, LOOPBACK_ADDRESS, udSOCKSPort.Position, NetworkError);
+    FNetworkIntegration.Apply(False, False, LOOPBACK_ADDRESS, udSOCKSPort.Position, False, NetworkError);
     FSystemProxyState := NI_OFF;
     FTunState := NI_OFF;
     UpdateNetworkIntegrationControls;
@@ -20364,7 +20365,7 @@ begin
 
   begin
 
-    if FNetworkIntegration.Apply(False, False, LOOPBACK_ADDRESS, udSOCKSPort.Position, ErrorText) then
+    if FNetworkIntegration.Apply(False, False, LOOPBACK_ADDRESS, udSOCKSPort.Position, False, ErrorText) then
 
     begin
 
@@ -20466,7 +20467,7 @@ begin
 
 
 
-  if FNetworkIntegration.Apply(FSystemProxyEnabled, FTunEnabled, SocksHost, SocksPort, ErrorText) then
+  if FNetworkIntegration.Apply(FSystemProxyEnabled, FTunEnabled, SocksHost, SocksPort, FAllowTunElevationOnce, ErrorText) then
 
   begin
 
@@ -20488,6 +20489,7 @@ begin
 
   end;
 
+  FAllowTunElevationOnce := False;
   UpdateNetworkIntegrationControls;
 
 end;
@@ -20566,7 +20568,7 @@ begin
   UpdateNetworkIntegrationControls;
   if Assigned(FNetworkIntegration) then
   begin
-    if FNetworkIntegration.Apply(False, False, LOOPBACK_ADDRESS, udSOCKSPort.Position, ErrorText) then
+    if FNetworkIntegration.Apply(False, False, LOOPBACK_ADDRESS, udSOCKSPort.Position, False, ErrorText) then
     begin
       FSystemProxyState := NI_OFF;
       FTunState := NI_OFF;
@@ -20662,6 +20664,7 @@ begin
   begin
     FSystemProxyEnabled := False;
     FTunEnabled := True;
+    FAllowTunElevationOnce := True;
   end;
 
   SaveNetworkIntegrationPreferences;

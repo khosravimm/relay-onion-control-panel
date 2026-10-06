@@ -36,7 +36,7 @@ type
     destructor Destroy; override;
     procedure RecoverStaleState;
     function Apply(SystemProxyEnabled, TunEnabled: Boolean;
-      const TorHost: string; TorPort: Word; out ErrorText: string): Boolean;
+      const TorHost: string; TorPort: Word; AllowElevation: Boolean; out ErrorText: string): Boolean;
     procedure Shutdown;
     property SystemProxyActive: Boolean read FSystemProxyActive;
     property TunActive: Boolean read FTunActive;
@@ -398,7 +398,7 @@ begin
 end;
 
 function TNetworkIntegrationManager.Apply(SystemProxyEnabled, TunEnabled: Boolean;
-  const TorHost: string; TorPort: Word; out ErrorText: string): Boolean;
+  const TorHost: string; TorPort: Word; AllowElevation: Boolean; out ErrorText: string): Boolean;
 var
   Config: string;
   EncodingNoBom: TUTF8Encoding;
@@ -434,6 +434,13 @@ begin
       ', tun=' + BoolToStr(TunEnabled, True) + ', tor=' + TorHost + ':' + IntToStr(TorPort));
     if not RunConfigCheck(ErrorText) then
       Exit;
+
+    if TunEnabled and not AllowElevation then
+    begin
+      ErrorText := 'TUN requires explicit user confirmation. Click TUN (LAN) to re-enable it.';
+      AppendLog('blocked automatic TUN elevation request');
+      Exit;
+    end;
 
     if not StartEngine(TunEnabled, ErrorText) then
       Exit;
