@@ -198,7 +198,57 @@ begin
   Result := True;
 end;
 procedure TNetworkIntegrationManager.NotifyProxyChanged;
+type
+  // Native alignment is required: the WinINet value union contains pointers.
+  TConnectionOption = record
+    Option: DWORD;
+    Value: NativeUInt;
+  end;
+  TConnectionOptionList = record
+    Size: DWORD;
+    Connection: PChar;
+    Count, Error: DWORD;
+    Options: Pointer;
+  end;
+var
+  Options: array[0..2] of TConnectionOption;
+  List: TConnectionOptionList;
+  BufferSize, Flags: DWORD;
+  Reg: TRegistry;
+  Server, Bypass: string;
 begin
+  FillChar(Options, SizeOf(Options), 0);
+  FillChar(List, SizeOf(List), 0);
+  List.Size := SizeOf(List);
+  List.Count := 1;
+  List.Options := @Options[0];
+  Options[0].Option := 1; // INTERNET_PER_CONN_FLAGS
+  BufferSize := SizeOf(List);
+  if not InternetQueryOption(nil, 75, @List, BufferSize) then
+    RaiseLastOSError;
+  Flags := DWORD(Options[0].Value);
+  Reg := TRegistry.Create(KEY_READ);
+  try
+    Reg.RootKey := HKEY_CURRENT_USER;
+    if not Reg.OpenKeyReadOnly(INTERNET_SETTINGS_KEY) then
+      raise Exception.Create('Unable to synchronize Windows proxy settings');
+    // Keep PAC/autodetection flags; synchronize the manual proxy only.
+    Flags := (Flags or 1) and not DWORD(2);
+    if Reg.ValueExists('ProxyEnable') and (Reg.ReadInteger('ProxyEnable') <> 0) then
+      Flags := Flags or 2;
+    if Reg.ValueExists('ProxyServer') then Server := Reg.ReadString('ProxyServer');
+    if Reg.ValueExists('ProxyOverride') then Bypass := Reg.ReadString('ProxyOverride');
+  finally
+    Reg.Free;
+  end;
+  Options[0].Value := Flags;
+  Options[1].Option := 2; // INTERNET_PER_CONN_PROXY_SERVER
+  Options[1].Value := NativeUInt(PChar(Server));
+  Options[2].Option := 3; // INTERNET_PER_CONN_PROXY_BYPASS
+  Options[2].Value := NativeUInt(PChar(Bypass));
+  List.Count := Length(Options);
+  if not InternetSetOption(nil, 75, @List, SizeOf(List)) then
+    RaiseLastOSError;
   InternetSetOption(nil, INTERNET_OPTION_SETTINGS_CHANGED, nil, 0);
   InternetSetOption(nil, INTERNET_OPTION_REFRESH, nil, 0);
 end;
@@ -294,8 +344,8 @@ begin
     Reg.Free;
   end;
 
-  DeleteFile(FProxyStateFile);
   NotifyProxyChanged;
+  DeleteFile(FProxyStateFile);
   FSystemProxyActive := False;
 end;
 
