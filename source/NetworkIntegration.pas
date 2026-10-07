@@ -20,17 +20,19 @@ type
     FSystemProxyActive: Boolean;
     FTunActive: Boolean;
     FJobHandle: THandle;
+    FAppliedConfig: string;
+  protected
     function BuildConfig(SystemProxyEnabled, TunEnabled: Boolean;
       const TorHost: string; TorPort: Word): string;
-    function StartEngine(NeedElevation: Boolean; out ErrorText: string): Boolean;
-    function StopEngine(out ErrorText: string): Boolean;
+    function StartEngine(NeedElevation: Boolean; out ErrorText: string): Boolean; virtual;
+    function StopEngine(out ErrorText: string): Boolean; virtual;
     procedure SaveProxySnapshot;
     procedure ApplySystemProxy;
     procedure RestoreSystemProxy;
     procedure NotifyProxyChanged;
-    function IsEngineRunning: Boolean;
+    function IsEngineRunning: Boolean; virtual;
     procedure AppendLog(const Msg: string);
-    function RunConfigCheck(out ErrorText: string): Boolean;
+    function RunConfigCheck(out ErrorText: string): Boolean; virtual;
   public
     constructor Create(const AProgramDir, AUserDir: string; AJobHandle: THandle);
     destructor Destroy; override;
@@ -395,6 +397,7 @@ begin
     CloseHandle(FProcess.hProcess);
   FProcess := cDefaultProcessInfo;
   FTunActive := False;
+  FAppliedConfig := '';
 end;
 
 function TNetworkIntegrationManager.Apply(SystemProxyEnabled, TunEnabled: Boolean;
@@ -407,6 +410,23 @@ begin
   Result := False;
   ErrorText := '';
   EngineNeeded := SystemProxyEnabled or TunEnabled;
+  Config := BuildConfig(SystemProxyEnabled, TunEnabled, TorHost, TorPort);
+
+  // Reapply is a no-op only when both the runtime and applied configuration match.
+  if EngineNeeded and IsEngineRunning and (FAppliedConfig = Config) and
+    (FTunActive = TunEnabled) and (FSystemProxyActive = SystemProxyEnabled) then
+  begin
+    AppendLog('apply: unchanged; keeping running pid=' + IntToStr(FProcess.ProcessID));
+    Exit(True);
+  end;
+
+  // Authorization precedes all mutation, including stopping a healthy engine.
+  if TunEnabled and not AllowElevation then
+  begin
+    ErrorText := 'TUN requires explicit user confirmation. Click TUN (LAN) to re-enable it.';
+    AppendLog('blocked automatic TUN elevation request; existing engine preserved');
+    Exit;
+  end;
 
   try
     if FSystemProxyActive and not SystemProxyEnabled then
@@ -435,16 +455,12 @@ begin
     if not RunConfigCheck(ErrorText) then
       Exit;
 
-    if TunEnabled and not AllowElevation then
-    begin
-      ErrorText := 'TUN requires explicit user confirmation. Click TUN (LAN) to re-enable it.';
-      AppendLog('blocked automatic TUN elevation request');
-      Exit;
-    end;
+
 
     if not StartEngine(TunEnabled, ErrorText) then
       Exit;
 
+    FAppliedConfig := Config;
     FTunActive := TunEnabled;
     if SystemProxyEnabled then
       ApplySystemProxy
