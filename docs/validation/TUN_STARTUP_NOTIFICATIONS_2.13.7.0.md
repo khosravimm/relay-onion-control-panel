@@ -25,3 +25,10 @@ The controller considered the process active after only 700 ms. When it subseque
 - Safe-Laptop diagnostic: the old name reproduced the delayed fatal error; a fresh name ran successfully and ordinary no-proxy traffic exited through Tor. The diagnostic engine was stopped afterward.
 
 The full 2.13.7.0 GUI package was not yet installed on Safe-Laptop at the time of this report. This is a test candidate; existing IPv6 and VPN compatibility boundaries from 2.13.6.0 apply.
+## Safe-Laptop installed GUI validation (after publication)
+
+The published 2.13.7.0 installer was downloaded and its SHA-256 compared with the frozen asset using .NET SHA256. Configuration files were backed up locally and their hashes verified. Installation into the existing directory returned exit 0 and required no Windows restart; FileVersion/ProductVersion are 2.13.7.0.
+
+Tor reached 100% bootstrap. An explicit UI TUN click started sing-box PID 4512 and created RelayOnion-1BFF546F with both IPv4 /1 routes. The UI showed TUN active and United States. Ordinary no-proxy HTTPS and explicit local Tor SOCKS requests both returned 147.90.234.63, exit 0. Windows selected this TUN for destinations in both IPv4 halves.
+
+At 13:51:20 local time, more than 100 seconds after startup, the same engine PID and routes remained active. The integration log showed unchanged reapply preserving PID 4512; no automatic-elevation denial appeared in this test interval. The runtime warning/error log was empty. This verifies the installed GUI with the current VPN; it is not a claim of compatibility with every VPN. TUN was left running after validation.
