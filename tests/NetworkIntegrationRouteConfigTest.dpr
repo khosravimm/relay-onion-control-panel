@@ -15,7 +15,7 @@ var M: TConfigManager; J, Inbound, Route, Tor: TJSONObject;
 begin
   try
     if ParamCount <> 1 then raise Exception.Create('Supply fixture output directory');
-    Dir := ParamStr(1); ForceDirectories(Dir);
+    Dir := TPath.GetFullPath(ParamStr(1)); ForceDirectories(Dir);
     M := TConfigManager.Create(Dir, Dir, 0);
     try
       for Proxy := False to True do

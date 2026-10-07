@@ -1,3 +1,4 @@
+2.13.7.0 - TUN: fresh interface identity per explicit start, route readiness check, runtime error log, and no repeated error notifications from circuit events.
 2.13.6.0 - TUN: use split IPv4 routes to take precedence over VPN default routes without adapter-specific settings.
 2.13.5.0 - Local TUN fix: preserve running engine on identical reapply; authorize restarts before stop.
 2.13.3.0 (explicit TUN elevation guard):

@@ -1,6 +1,6 @@
 program NetworkIntegrationReapplyTest;
 {$APPTYPE CONSOLE}
-uses System.SysUtils, System.IOUtils, Winapi.Windows, NetworkIntegration;
+uses System.SysUtils, System.IOUtils, System.JSON, Winapi.Windows, NetworkIntegration;
 type
   TFakeManager = class(TNetworkIntegrationManager)
   public
@@ -20,6 +20,13 @@ function TFakeManager.StopEngine(out ErrorText: string): Boolean;
 begin Inc(Stops); Running := False; ErrorText := ''; Result := True end;
 function TFakeManager.RunConfigCheck(out ErrorText: string): Boolean;
 begin Inc(Checks); ErrorText := ''; Result := True end;
+function InterfaceName(const Config: string): string;
+var J: TJSONObject;
+begin
+  J := TJSONObject.ParseJSONValue(Config) as TJSONObject;
+  try Result := (J.GetValue<TJSONArray>('inbounds').Items[0] as TJSONObject).GetValue<string>('interface_name')
+  finally J.Free end;
+end;
 procedure Check(Ok: Boolean; const Msg: string);
 begin if not Ok then raise Exception.Create(Msg); Writeln('PASS: ', Msg) end;
 var M: TFakeManager; Err, Dir, Before: string; I: Integer;
@@ -40,6 +47,8 @@ begin
       Check(TFile.ReadAllText(TPath.Combine(Dir,'network\sing-box.json'))=Before, 'denied change preserves config');
       Check(M.Apply(False, True, '127.0.0.1', 9051, True, Err), 'explicit change restarts');
       Check((M.Starts=2) and (M.Stops=1), 'explicit change performs one restart');
+      Check(InterfaceName(TFile.ReadAllText(TPath.Combine(Dir,'network\sing-box.json'))) <>
+        InterfaceName(Before), 'explicit restart uses a fresh TUN identity');
       Check(M.Apply(False, False, '127.0.0.1', 9051, False, Err), 'off stops engine');
       Check(not M.Running, 'off leaves runtime stopped');
       M.Running := False;
