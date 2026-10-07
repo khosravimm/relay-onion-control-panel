@@ -256,7 +256,11 @@ begin
       Inbounds := Inbounds + ',';
     Inbounds := Inbounds +
       '{"type":"tun","tag":"tun-in","interface_name":"RelayOnion",' +
-      '"address":["172.19.0.1/30"],"auto_route":true,"strict_route":true,"dns_mode":"hijack"}';
+      // More-specific routes win over a VPN default route regardless of metric.
+      // sing-box owns these routes and removes them when the TUN closes.
+      '"address":["172.19.0.1/30"],"auto_route":true,' +
+      '"route_address":["0.0.0.0/1","128.0.0.0/1"],' +
+      '"strict_route":true,"dns_mode":"hijack"}';
 
     DnsPart :=
       '"dns":{"servers":[{"type":"tls","tag":"tor-dns","server":"8.8.8.8",' +

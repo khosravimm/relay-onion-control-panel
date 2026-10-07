@@ -1,3 +1,4 @@
+2.13.6.0 - TUN: use split IPv4 routes to take precedence over VPN default routes without adapter-specific settings.
 2.13.5.0 - Local TUN fix: preserve running engine on identical reapply; authorize restarts before stop.
 2.13.3.0 (explicit TUN elevation guard):
   - Allow UAC/elevation for TUN only from direct user TUN toggle clicks.
