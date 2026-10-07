@@ -21,6 +21,10 @@ type
     FTunActive: Boolean;
     FJobHandle: THandle;
     FAppliedConfig: string;
+    FTunInterfaceName: string;
+    FRuntimeLogFile: string;
+    procedure RenewTunInterfaceName;
+    function TunRoutesReady: Boolean;
   protected
     function BuildConfig(SystemProxyEnabled, TunEnabled: Boolean;
       const TorHost: string; TorPort: Word): string;
@@ -46,6 +50,8 @@ type
 
 implementation
 
+uses Winapi.IpHlpApi, Winapi.IpTypes, Winapi.IpRtrMib, System.JSON;
+
 const
   INTERNET_SETTINGS_KEY = 'Software\Microsoft\Windows\CurrentVersion\Internet Settings';
   MIXED_PROXY_PORT = 2080;
@@ -60,10 +66,70 @@ begin
   FConfigFile := FUserDir + 'network\sing-box.json';
   FProxyStateFile := FUserDir + 'network\windows-proxy-state.ini';
   FLogFile := FUserDir + 'network\network-integration.log';
+  FRuntimeLogFile := FUserDir + 'network\sing-box-runtime.log';
+  RenewTunInterfaceName;
   FProcess := cDefaultProcessInfo;
   FSystemProxyActive := False;
   FTunActive := False;
   FJobHandle := AJobHandle;
+end;
+
+procedure TNetworkIntegrationManager.RenewTunInterfaceName;
+var Id: TGUID;
+begin
+  if CreateGUID(Id) <> 0 then
+    raise Exception.Create('Unable to allocate a TUN interface identity');
+  FTunInterfaceName := 'RelayOnion-' + Copy(GUIDToString(Id), 2, 8);
+end;
+
+function TNetworkIntegrationManager.TunRoutesReady: Boolean;
+var
+  Buffer: TBytes;
+  Size, IfIndex: ULONG;
+  Adapter: PIP_ADAPTER_ADDRESSES;
+  Table: PMIB_IPFORWARDTABLE;
+  Row: PMIB_IPFORWARDROW;
+  I: Integer;
+  LowerHalf, UpperHalf: Boolean;
+begin
+  Result := False;
+  IfIndex := 0;
+  Size := 0;
+  if GetAdaptersAddresses(2, 0, nil, nil, @Size) <> ERROR_BUFFER_OVERFLOW then Exit;
+  SetLength(Buffer, Size);
+  Adapter := PIP_ADAPTER_ADDRESSES(@Buffer[0]);
+  if GetAdaptersAddresses(2, 0, nil, Adapter, @Size) <> NO_ERROR then Exit;
+  while Adapter <> nil do
+  begin
+    if (Adapter.FriendlyName <> nil) and
+      SameText(string(Adapter.FriendlyName), FTunInterfaceName) and
+      (Ord(Adapter.OperStatus) = 1) then
+    begin
+      IfIndex := Adapter.Union.IfIndex;
+      Break;
+    end;
+    Adapter := Adapter.Next;
+  end;
+  if IfIndex = 0 then Exit;
+  Size := 0;
+  if GetIpForwardTable(nil, Size, False) <> ERROR_INSUFFICIENT_BUFFER then Exit;
+  SetLength(Buffer, Size);
+  Table := PMIB_IPFORWARDTABLE(@Buffer[0]);
+  if GetIpForwardTable(Table, Size, False) <> NO_ERROR then Exit;
+  LowerHalf := False;
+  UpperHalf := False;
+  for I := 0 to Integer(Table.dwNumEntries) - 1 do
+  begin
+    Row := PMIB_IPFORWARDROW(PByte(@Table.table[0]) + I * SizeOf(MIB_IPFORWARDROW));
+    // IPv4 DWORDs are stored in network byte order (128.0.0.0 = $80).
+    if (Row.dwForwardIfIndex = IfIndex) and (Row.dwForwardMask = $80) and
+      (Row.dwForwardType <> MIB_IPROUTE_TYPE_INVALID) then
+    begin
+      if Row.dwForwardDest = 0 then LowerHalf := True;
+      if Row.dwForwardDest = $80 then UpperHalf := True;
+    end;
+  end;
+  Result := LowerHalf and UpperHalf;
 end;
 
 destructor TNetworkIntegrationManager.Destroy;
@@ -132,7 +198,57 @@ begin
   Result := True;
 end;
 procedure TNetworkIntegrationManager.NotifyProxyChanged;
+type
+  // Native alignment is required: the WinINet value union contains pointers.
+  TConnectionOption = record
+    Option: DWORD;
+    Value: NativeUInt;
+  end;
+  TConnectionOptionList = record
+    Size: DWORD;
+    Connection: PChar;
+    Count, Error: DWORD;
+    Options: Pointer;
+  end;
+var
+  Options: array[0..2] of TConnectionOption;
+  List: TConnectionOptionList;
+  BufferSize, Flags: DWORD;
+  Reg: TRegistry;
+  Server, Bypass: string;
 begin
+  FillChar(Options, SizeOf(Options), 0);
+  FillChar(List, SizeOf(List), 0);
+  List.Size := SizeOf(List);
+  List.Count := 1;
+  List.Options := @Options[0];
+  Options[0].Option := 1; // INTERNET_PER_CONN_FLAGS
+  BufferSize := SizeOf(List);
+  if not InternetQueryOption(nil, 75, @List, BufferSize) then
+    RaiseLastOSError;
+  Flags := DWORD(Options[0].Value);
+  Reg := TRegistry.Create(KEY_READ);
+  try
+    Reg.RootKey := HKEY_CURRENT_USER;
+    if not Reg.OpenKeyReadOnly(INTERNET_SETTINGS_KEY) then
+      raise Exception.Create('Unable to synchronize Windows proxy settings');
+    // Keep PAC/autodetection flags; synchronize the manual proxy only.
+    Flags := (Flags or 1) and not DWORD(2);
+    if Reg.ValueExists('ProxyEnable') and (Reg.ReadInteger('ProxyEnable') <> 0) then
+      Flags := Flags or 2;
+    if Reg.ValueExists('ProxyServer') then Server := Reg.ReadString('ProxyServer');
+    if Reg.ValueExists('ProxyOverride') then Bypass := Reg.ReadString('ProxyOverride');
+  finally
+    Reg.Free;
+  end;
+  Options[0].Value := Flags;
+  Options[1].Option := 2; // INTERNET_PER_CONN_PROXY_SERVER
+  Options[1].Value := NativeUInt(PChar(Server));
+  Options[2].Option := 3; // INTERNET_PER_CONN_PROXY_BYPASS
+  Options[2].Value := NativeUInt(PChar(Bypass));
+  List.Count := Length(Options);
+  if not InternetSetOption(nil, 75, @List, SizeOf(List)) then
+    RaiseLastOSError;
   InternetSetOption(nil, INTERNET_OPTION_SETTINGS_CHANGED, nil, 0);
   InternetSetOption(nil, INTERNET_OPTION_REFRESH, nil, 0);
 end;
@@ -228,8 +344,8 @@ begin
     Reg.Free;
   end;
 
-  DeleteFile(FProxyStateFile);
   NotifyProxyChanged;
+  DeleteFile(FProxyStateFile);
   FSystemProxyActive := False;
 end;
 
@@ -242,8 +358,11 @@ end;
 function TNetworkIntegrationManager.BuildConfig(SystemProxyEnabled, TunEnabled: Boolean;
   const TorHost: string; TorPort: Word): string;
 var
-  Inbounds, DnsPart, RouteRules: string;
+  Inbounds, DnsPart, RouteRules, LogPath: string;
+  JsonPath: TJSONString;
 begin
+  JsonPath := TJSONString.Create(FRuntimeLogFile);
+  try LogPath := JsonPath.ToJSON finally JsonPath.Free end;
   Inbounds := '';
   if SystemProxyEnabled then
     Inbounds :=
@@ -255,8 +374,12 @@ begin
     if Inbounds <> '' then
       Inbounds := Inbounds + ',';
     Inbounds := Inbounds +
-      '{"type":"tun","tag":"tun-in","interface_name":"RelayOnion",' +
-      '"address":["172.19.0.1/30"],"auto_route":true,"strict_route":true,"dns_mode":"hijack"}';
+      '{"type":"tun","tag":"tun-in","interface_name":"' + FTunInterfaceName + '",' +
+      // More-specific routes win over a VPN default route regardless of metric.
+      // sing-box owns these routes and removes them when the TUN closes.
+      '"address":["172.19.0.1/30"],"auto_route":true,' +
+      '"route_address":["0.0.0.0/1","128.0.0.0/1"],' +
+      '"strict_route":true,"dns_mode":"hijack"}';
 
     DnsPart :=
       '"dns":{"servers":[{"type":"tls","tag":"tor-dns","server":"8.8.8.8",' +
@@ -278,7 +401,7 @@ begin
 
   Result :=
     '{' +
-      '"log":{"level":"warn","timestamp":true},' +
+      '"log":{"level":"warn","timestamp":true,"output":' + LogPath + '},' +
       DnsPart +
       '"inbounds":[' + Inbounds + '],' +
       '"outbounds":[' +
@@ -302,7 +425,9 @@ function TNetworkIntegrationManager.StartEngine(NeedElevation: Boolean; out Erro
 var
   CmdLine, Params: string;
   Sei: TShellExecuteInfo;
-  WaitResult: DWORD;
+  WaitResult, ExitCode: DWORD;
+  Deadline: UInt64;
+  StopError: string;
 begin
   Result := False;
   ErrorText := '';
@@ -347,10 +472,27 @@ begin
     end;
   end;
 
+  Deadline := GetTickCount64 + 20000;
   WaitResult := WaitForSingleObject(FProcess.hProcess, 700);
+  if NeedElevation then
+  begin
+    while (WaitResult = WAIT_TIMEOUT) and not TunRoutesReady do
+    begin
+      if GetTickCount64 >= Deadline then
+      begin
+        ErrorText := 'TUN interface/routes were not ready within 20 seconds. See ' + FRuntimeLogFile;
+        AppendLog(ErrorText);
+        StopEngine(StopError);
+        Exit;
+      end;
+      WaitResult := WaitForSingleObject(FProcess.hProcess, 100);
+    end;
+  end;
   if WaitResult <> WAIT_TIMEOUT then
   begin
-    ErrorText := 'sing-box stopped during startup. See ' + FLogFile;
+    ExitCode := 0;
+    GetExitCodeProcess(FProcess.hProcess, ExitCode);
+    ErrorText := 'sing-box stopped during startup (exit ' + IntToStr(ExitCode) + '). See ' + FRuntimeLogFile;
     AppendLog(ErrorText);
     CloseHandle(FProcess.hProcess);
     FProcess := cDefaultProcessInfo;
@@ -443,6 +585,7 @@ begin
       Exit(True);
     end;
 
+    if TunEnabled then RenewTunInterfaceName;
     Config := BuildConfig(SystemProxyEnabled, TunEnabled, TorHost, TorPort);
     EncodingNoBom := TUTF8Encoding.Create(False);
     try

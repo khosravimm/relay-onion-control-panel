@@ -20359,6 +20359,10 @@ begin
 
     Exit;
 
+  // Circuit events must not retry a failed TUN or repeat its notification.
+  if FTunEnabled and (FTunState = NI_ERROR) and not FAllowTunElevationOnce then
+    Exit;
+
 
 
   if not FSystemProxyEnabled and not FTunEnabled then
@@ -20655,7 +20659,7 @@ begin
   if FNetworkIntegrationSuspended then
     FNetworkIntegrationSuspendUserChanged := True;
 
-  if FTunEnabled then
+  if FTunEnabled and (FTunState <> NI_ERROR) then
   begin
     FSystemProxyEnabled := False;
     FTunEnabled := False;
