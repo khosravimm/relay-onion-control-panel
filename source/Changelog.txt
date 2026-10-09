@@ -1,3 +1,8 @@
+3.0.0.4 - Native Delphi Flow engine: dynamic current US exit discovery, fingerprint-based Tor client, HTTPS verification via Windows HTTP CONNECT, sequential failover; no PowerShell runtime.
+3.0.0.3 - Fix Flow startup illegal path characters from trailing slash and validate installation root. Verified independent US Tor HTTP 200 and Stop on SUMS.
+3.0.0.2 - Compact layout correction (Flow outside toolbar), Flow status parser/diagnostics and script exception logging.
+3.0.0.1 - Flow UI hotfix: separate toolbar row, enlarged status indicator and visible Flow failure feedback.
+3.0.0.0 - Initial Flow isolated US-only proxy mode, exclusive mode controls and Flow connection status. Preview: extension integration requires validation.
 2.13.8.0 - Windows proxy: synchronize native default-connection proxy settings on enable/restore to prevent ERR_PROXY_CONNECTION_FAILED after switching to TUN.
 2.13.7.0 - TUN: fresh interface identity per explicit start, route readiness check, runtime error log, and no repeated error notifications from circuit events.
 2.13.6.0 - TUN: use split IPv4 routes to take precedence over VPN default routes without adapter-specific settings.

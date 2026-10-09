@@ -551,6 +551,14 @@ var
 begin
   Result := False;
   ErrorText := '';
+  // RD3-S1: enforce exclusivity at the privileged network-effect boundary,
+  // not just in UI button handlers. Reject before mutating state.
+  if SystemProxyEnabled and TunEnabled then
+  begin
+    ErrorText := 'RD3-S1: simultaneous system Proxy and TUN is forbidden';
+    AppendLog('blocked conflicting modes; no mutation performed');
+    Exit;
+  end;
   EngineNeeded := SystemProxyEnabled or TunEnabled;
   Config := BuildConfig(SystemProxyEnabled, TunEnabled, TorHost, TorPort);
 

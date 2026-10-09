@@ -1,5 +1,7 @@
 # Relay Onion Control Panel
 
+> **v3.0.0 execution and acceptance authority: [RD-3 — Final Flow Mission Roadmap](docs/RD-3.md).** All 3.0.0 work units, UI/UX and release gates must be checked against RD-3. Preview builds do not signify acceptance.
+
 [فارسی / Persian](README.fa.md)
 
 **Relay Onion Control Panel** is an independent Windows GUI for configuring, managing, and monitoring a Tor™ Expert Bundle runtime. It is a derivative of the open-source [Tor Control Panel](https://github.com/abysshint/tor-control-panel) project maintained by `abysshint` and its contributors.

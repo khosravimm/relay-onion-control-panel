@@ -4,13 +4,13 @@ interface
 
 uses
   Winapi.Windows, Winapi.Messages, Winapi.CommCtrl, Winapi.Winsock, Winapi.shlwapi,
-  Winapi.ShlObj, Winapi.GDIPAPI, Winapi.GDIPOBJ, System.SysUtils, System.IniFiles, System.Hash,
+  Winapi.ShlObj, Winapi.ShellAPI, Winapi.GDIPAPI, Winapi.GDIPOBJ, System.SysUtils, System.IniFiles, System.Hash,
   System.NetEncoding, System.Generics.Collections, System.Generics.Defaults, System.ImageList,
   System.DateUtils, System.Math, System.IOUtils, Vcl.Forms, System.Classes, System.Masks,
   Vcl.ImgList, Vcl.Controls, Vcl.ExtCtrls, Vcl.Menus, Vcl.StdCtrls, Vcl.Grids, Vcl.ComCtrls,
   Vcl.Clipbrd, Vcl.Dialogs, Vcl.Graphics, Vcl.Themes, Vcl.Buttons, blcksock, dnssend, httpsend,
   pingsend, synautil, ConstData, Functions, Addons, Languages, ClassData, MachineInterface, TcpMcp,
-  NetworkIntegration;
+  NetworkIntegration, FlowNativeV3, FlowCatalogV3, RD3ModeController, FlowBrowserV3;
 
 type
   TUserGrid = class(TCustomGrid);
@@ -1716,6 +1716,16 @@ type
     lbTunStatus: TLabel;
     shpSystemProxyLamp: TShape;
     shpTunLamp: TShape;
+    btnFlowToggle: TBitBtn;
+    FFlowRequested: Boolean;
+    FFlowEngine: TFlowNativeV3;
+    FRD3Mode: TRD3ModeController;
+    FFlowTransitionToken: Cardinal;
+    FRD3NetworkTransitionToken: Cardinal;
+    FRD3NetworkTarget: TRD3Mode;
+    FFlowBrowserLaunched: Boolean;
+    FFlowTimer: TTimer;
+
     FMachineSettings: TTcpMachineSettings;
     FMachineService: TTcpMachineService;
     FRestServer: TTcpRestServer;
@@ -1771,6 +1781,9 @@ type
     procedure RestoreNetworkIntegrationAfterScanner;
     procedure SystemProxyToggleClick(Sender: TObject);
     procedure TunToggleClick(Sender: TObject);
+    procedure FlowToggleClick(Sender: TObject);
+    procedure FlowTick(Sender: TObject);
+    procedure LaunchFlowAction(const Action: string);
     procedure WMExitSizeMove(var msg: TMessage); message WM_EXITSIZEMOVE;
     procedure WMDpiChanged(var msg: TWMDpi); message WM_DPICHANGED;
     procedure WMQueryEndSession(var Message: TWMQueryEndSession); message WM_QUERYENDSESSION;
@@ -12945,7 +12958,7 @@ begin
   if FormSize = 0 then
   begin
     H := Round(91 * Scale);
-    W := Round(430 * Scale);
+    W := Round(540 * Scale);
   end
   else
   begin
@@ -20260,6 +20273,29 @@ begin
   shpTunLamp.ShowHint := True;
   shpTunLamp.BringToFront;
 
+  // Compact window: do not move or cover the toolbar row.
+  FFlowRequested := False;
+  FFlowEngine := TFlowNativeV3.Create;
+  FRD3Mode := TRD3ModeController.Create;
+  FFlowTransitionToken := 0;
+  FRD3NetworkTransitionToken := 0;
+  FRD3NetworkTarget := rmOff;
+  FFlowBrowserLaunched := False;
+  btnFlowToggle := TBitBtn.Create(Self);
+  btnFlowToggle.Parent := paButtons;
+  btnFlowToggle.Left := Round(429 * Scale);
+  btnFlowToggle.Top := Round(3 * Scale);
+  btnFlowToggle.Width := Round(102 * Scale);
+  btnFlowToggle.Height := Round(47 * Scale);
+  btnFlowToggle.Caption := 'Flow';
+  btnFlowToggle.Hint := 'Flow US exit profile';
+  btnFlowToggle.ShowHint := True;
+  btnFlowToggle.OnClick := FlowToggleClick;
+  FFlowTimer := TTimer.Create(Self);
+  FFlowTimer.Interval := 2500;
+  FFlowTimer.OnTimer := FlowTick;
+  FFlowTimer.Enabled := True;
+
   UpdateNetworkIntegrationControls;
 end;
 function CreateNetworkLampGlyph(AColor: TColor): TBitmap;
@@ -20288,7 +20324,51 @@ begin
   Result.Canvas.Ellipse(6, 5, 9, 8);
 end;
 
-procedure SetNetworkButtonLamp(Btn: TBitBtn; State: Integer);
+function CreateModeIcon(Kind: Integer; AColor: TColor): TBitmap;
+var
+  C: TCanvas;
+begin
+  Result := TBitmap.Create;
+  Result.SetSize(24, 22);
+  Result.Transparent := True;
+  Result.TransparentColor := clFuchsia;
+  C := Result.Canvas;
+  C.Brush.Color := clFuchsia;
+  C.FillRect(Rect(0, 0, 24, 22));
+  C.Pen.Color := clBlack;
+  C.Pen.Width := 2;
+  C.Brush.Style := bsClear;
+  case Kind of
+    0: begin // Flow: connected squares, matching the approved mode icon.
+      C.RoundRect(2, 3, 9, 10, 2, 2);
+      C.MoveTo(8, 9); C.LineTo(13, 14);
+      C.MoveTo(13, 14); C.LineTo(17, 14);
+      C.RoundRect(16, 12, 22, 19, 2, 2);
+    end;
+    1: begin // TUN: branching network.
+      C.Ellipse(10, 2, 15, 7);
+      C.MoveTo(12, 7); C.LineTo(12, 11);
+      C.MoveTo(4, 11); C.LineTo(20, 11);
+      C.MoveTo(4, 11); C.LineTo(4, 15);
+      C.MoveTo(20, 11); C.LineTo(20, 15);
+      C.Ellipse(2, 15, 7, 20);
+      C.Ellipse(17, 15, 22, 20);
+    end;
+    2: begin // Proxy: globe meridians.
+      C.Ellipse(3, 2, 21, 20);
+      C.MoveTo(12, 2); C.LineTo(12, 20);
+      C.MoveTo(3, 11); C.LineTo(21, 11);
+      C.Arc(8, 2, 16, 20, 12, 2, 12, 20);
+    end;
+  end;
+  C.Brush.Style := bsSolid;
+  C.Brush.Color := AColor;
+  C.Pen.Width := 1;
+  C.Pen.Color := clWhite;
+  C.Ellipse(16, 14, 24, 22);
+end;
+
+procedure SetNetworkButtonLamp(Btn: TBitBtn; State: Integer; Kind: Integer = 0);
 var
   Bmp: TBitmap;
   Color: TColor;
@@ -20299,7 +20379,7 @@ begin
     else Color := clRed;
   end;
 
-  Bmp := CreateNetworkLampGlyph(Color);
+  Bmp := CreateModeIcon(Kind, Color);
   try
     Btn.Glyph.Assign(Bmp);
   finally
@@ -20318,11 +20398,37 @@ begin
   if not Assigned(btnSystemProxyToggle) then
     Exit;
 
+  // RD3-S1: only externally observed adapter state may commit a mode.
+  // Pending transitions block duplicate user clicks until verification.
+  if (FRD3NetworkTransitionToken <> 0) and Assigned(FRD3Mode) and
+     Assigned(FNetworkIntegration) then
+  begin
+    if (FSystemProxyState = NI_ERROR) or (FTunState = NI_ERROR) then
+    begin
+      FRD3Mode.Rollback(FRD3NetworkTransitionToken);
+      FRD3NetworkTransitionToken := 0;
+    end
+    else if ((FRD3NetworkTarget = rmProxy) and
+             FNetworkIntegration.SystemProxyActive and
+             not FNetworkIntegration.TunActive) or
+            ((FRD3NetworkTarget = rmTun) and
+             FNetworkIntegration.TunActive and
+             not FNetworkIntegration.SystemProxyActive) or
+            ((FRD3NetworkTarget = rmOff) and
+             not FNetworkIntegration.SystemProxyActive and
+             not FNetworkIntegration.TunActive and
+             (FSystemProxyState = NI_OFF) and (FTunState = NI_OFF)) then
+    begin
+      FRD3Mode.Commit(FRD3NetworkTransitionToken, FRD3NetworkTarget);
+      FRD3NetworkTransitionToken := 0;
+    end;
+  end;
+
   btnSystemProxyToggle.Caption := 'Proxy';
   btnTunToggle.Caption := 'TUN (LAN)';
 
-  SetNetworkButtonLamp(btnSystemProxyToggle, FSystemProxyState);
-  SetNetworkButtonLamp(btnTunToggle, FTunState);
+  SetNetworkButtonLamp(btnSystemProxyToggle, FSystemProxyState, 2);
+  SetNetworkButtonLamp(btnTunToggle, FTunState, 1);
 
   btnSystemProxyToggle.Font.Style := [];
   btnTunToggle.Font.Style := [];
@@ -20623,8 +20729,35 @@ begin
   ApplyNetworkIntegrationDesired;
 end;
 procedure TTcp.SystemProxyToggleClick(Sender: TObject);
-
+// Flow mode blocks concurrent Proxy activation.
+var
+  Token: Cardinal;
+  Reason: string;
 begin
+  if FFlowRequested then
+  begin
+    ShowBalloon('Disable Flow before enabling Proxy.', 'Flow', False, mtWarning);
+    Exit;
+  end;
+  // RD3-S1: the legacy handler may not mutate the system while another
+  // mode operation is awaiting verification.
+  if Assigned(FRD3Mode) and FRD3Mode.Pending then
+  begin
+    ShowBalloon('Another network mode transition is still pending.',
+      'RD-3', False, mtWarning);
+    Exit;
+  end;
+  if FSystemProxyEnabled then FRD3NetworkTarget := rmOff
+  else FRD3NetworkTarget := rmProxy;
+  if Assigned(FRD3Mode) and not FRD3Mode.BeginTransition(
+    FRD3NetworkTarget, Token, Reason) then
+  begin
+    ShowBalloon('Proxy transition rejected: ' + Reason, 'RD-3', False, mtWarning);
+    Exit;
+  end;
+  FRD3NetworkTransitionToken := Token;
+  if FSystemProxyEnabled then FRD3NetworkTarget := rmOff
+  else FRD3NetworkTarget := rmProxy;
 
   if FNetworkIntegrationSuspended then
     FNetworkIntegrationSuspendUserChanged := True;
@@ -20653,8 +20786,35 @@ end;
 
 
 procedure TTcp.TunToggleClick(Sender: TObject);
-
+// Flow mode blocks concurrent TUN activation.
+var
+  Token: Cardinal;
+  Reason: string;
 begin
+  if FFlowRequested then
+  begin
+    ShowBalloon('Disable Flow before enabling TUN.', 'Flow', False, mtWarning);
+    Exit;
+  end;
+  if Assigned(FRD3Mode) and FRD3Mode.Pending then
+  begin
+    ShowBalloon('Another network mode transition is still pending.',
+      'RD-3', False, mtWarning);
+    Exit;
+  end;
+  if FTunEnabled and (FTunState <> NI_ERROR) then
+    FRD3NetworkTarget := rmOff
+  else FRD3NetworkTarget := rmTun;
+  if Assigned(FRD3Mode) and not FRD3Mode.BeginTransition(
+    FRD3NetworkTarget, Token, Reason) then
+  begin
+    ShowBalloon('TUN transition rejected: ' + Reason, 'RD-3', False, mtWarning);
+    Exit;
+  end;
+  FRD3NetworkTransitionToken := Token;
+  if FTunEnabled and (FTunState <> NI_ERROR) then
+    FRD3NetworkTarget := rmOff
+  else FRD3NetworkTarget := rmTun;
 
   if FNetworkIntegrationSuspended then
     FNetworkIntegrationSuspendUserChanged := True;
@@ -20683,6 +20843,180 @@ begin
 end;
 
 
+
+procedure TTcp.LaunchFlowAction(const Action: string);
+var
+  Router: TPair<string, TRouterInfo>;
+  List: TList<TFlowCandidateV3>;
+  Candidate: TFlowCandidateV3;
+  Arr: TArray<TFlowCandidateV3>;
+  I, J: Integer;
+begin
+  if not Assigned(FFlowEngine) then Exit;
+  if SameText(Action, 'Stop') then
+  begin
+    FFlowEngine.Stop;
+    FFlowBrowserLaunched := False;
+    Exit;
+  end;
+  List := TList<TFlowCandidateV3>.Create;
+  try
+    if Assigned(RoutersDic) then
+    for Router in RoutersDic do
+      if (rfExit in Router.Value.Flags) and
+         not (rfBadExit in Router.Value.Flags) and
+         (Length(Router.Key) = 40) and
+         SameText(CountryCodes[GetCountryValue(Router.Value.IPv4Addr)], 'us') then
+      begin
+        Candidate.Fingerprint := Router.Key;
+        Candidate.IPv4 := Router.Value.IPv4Addr;
+        List.Add(Candidate);
+      end;
+    Arr := List.ToArray;
+    if Length(Arr) = 0 then
+      Arr := TFlowCatalogV3.FromCache(UserDir);
+    if Length(Arr) = 0 then
+    begin
+      FFlowRequested := False;
+      ShowBalloon('No eligible US Tor exits found. Refresh router data.',
+        'Flow', True, mtError);
+      Exit;
+    end;
+    Randomize;
+    for I := High(Arr) downto 1 do
+    begin
+      J := Random(I + 1);
+      Candidate := Arr[I];
+      Arr[I] := Arr[J];
+      Arr[J] := Candidate;
+    end;
+    FFlowBrowserLaunched := False;
+    FFlowEngine.Start(ProgramDir, UserDir, Arr);
+  finally
+    List.Free;
+  end;
+end;
+
+procedure TTcp.FlowToggleClick(Sender: TObject);
+var
+  Token: Cardinal;
+  Reason: string;
+begin
+  if FFlowRequested then
+  begin
+    LaunchFlowAction('Stop');
+    FFlowRequested := False;
+    if (FFlowTransitionToken <> 0) and FRD3Mode.Pending then
+      FRD3Mode.Rollback(FFlowTransitionToken)
+    else if FRD3Mode.BeginTransition(rmOff, Token, Reason) then
+      FRD3Mode.Commit(Token, rmOff);
+    FFlowTransitionToken := 0;
+  end
+  else
+  begin
+    if FNetworkIntegrationSuspended then
+    begin
+      ShowBalloon('Wait for scanner network suspension to finish.',
+        'Flow', False, mtWarning);
+      Exit;
+    end;
+    // Refuse to alter an active TUN or system proxy while switching.
+    // A safe, verified transition adapter is required before automatic switching.
+    if FSystemProxyEnabled or FTunEnabled then
+    begin
+      ShowBalloon('Disable Proxy or TUN first to use Flow safely.',
+        'Flow', False, mtWarning);
+      Exit;
+    end;
+    if not FRD3Mode.BeginTransition(rmFlow, Token, Reason) then
+    begin
+      ShowBalloon('Flow transition rejected: ' + Reason, 'Flow', False, mtWarning);
+      Exit;
+    end;
+    FFlowTransitionToken := Token;
+    FFlowRequested := True;
+    LaunchFlowAction('Start');
+    if not FFlowRequested then
+    begin
+      FRD3Mode.Rollback(FFlowTransitionToken);
+      FFlowTransitionToken := 0;
+    end;
+    if FFlowRequested then
+      ShowBalloon('Flow: checking current US relays through native Delphi.',
+        'Flow', False, mtInfo);
+  end;
+  UpdateNetworkIntegrationControls;
+end;
+
+procedure TTcp.FlowTick(Sender: TObject);
+var
+  Status: Integer;
+  Msg, Ip, ChromePath, ChromeParams, ProfilePath, ExtensionPath: string;
+begin
+  if not Assigned(btnFlowToggle) or not Assigned(FFlowEngine) then Exit;
+  FFlowEngine.Snapshot(Status, Msg, Ip);
+  if FFlowRequested and (Status = 3) then
+  begin
+    if FRD3Mode.Pending then
+      FRD3Mode.Rollback(FFlowTransitionToken);
+    FFlowTransitionToken := 0;
+    FFlowRequested := False;
+    FFlowEngine.Stop;
+    ShowBalloon('Flow failed: ' + Msg, 'Flow', True, mtError);
+  end;
+  if FFlowRequested and (Status = 2) then
+  begin
+    if FRD3Mode.Pending and (FFlowTransitionToken <> 0) then
+    begin
+      FRD3Mode.Commit(FFlowTransitionToken, rmFlow);
+      FFlowTransitionToken := 0;
+    end;
+    SetNetworkButtonLamp(btnFlowToggle, NI_ACTIVE);
+    btnFlowToggle.Hint := 'Flow verified on US exit ' + Ip;
+    if not FFlowBrowserLaunched then
+    begin
+      FFlowBrowserLaunched := True;
+      ChromePath := TFlowBrowserV3.LocateChrome;
+      // RD-3: prefer the project's bundled, verified extension files.
+      ExtensionPath := TPath.Combine(ProgramDir, 'resources\ai-flow-bypasser');
+      if not FileExists(TPath.Combine(ExtensionPath, 'manifest.json')) then
+        ExtensionPath := TFlowBrowserV3.LocateBypassExtension;
+      ProfilePath := GetEnvironmentVariable('LOCALAPPDATA') +
+        '\RelayOnionControlPanel\FlowV3Native\chrome-profile';
+      if FileExists(ChromePath) then
+      begin
+        ChromeParams := '--user-data-dir="' + ProfilePath +
+          '" --no-first-run --proxy-server=socks5://127.0.0.1:19050 ';
+        if ExtensionPath <> '' then
+          ChromeParams := ChromeParams + '--disable-extensions-except="' +
+            ExtensionPath + '" --load-extension="' + ExtensionPath + '" ';
+        ChromeParams := ChromeParams + 'https://flow.google.com/';
+        if ShellExecuteW(Handle, 'open', PWideChar(ChromePath),
+          PWideChar(ChromeParams), nil, SW_SHOWNORMAL) <= 32 then
+        begin
+          FFlowBrowserLaunched := False;
+          ShowBalloon('Chrome failed to launch for Flow.', 'Flow', True, mtError);
+        end
+        else if ExtensionPath = '' then
+          ShowBalloon('AI Flow Bypasser was not found in the installed Chrome profiles.',
+            'Flow', False, mtWarning);
+      end
+      else
+        ShowBalloon('Chrome was not found. The Flow SOCKS5 proxy is ready.',
+          'Flow', False, mtWarning);
+    end;
+  end
+  else if FFlowRequested then
+  begin
+    SetNetworkButtonLamp(btnFlowToggle, NI_STARTING);
+    btnFlowToggle.Hint := Msg;
+  end
+  else
+  begin
+    SetNetworkButtonLamp(btnFlowToggle, NI_OFF);
+    btnFlowToggle.Hint := 'Flow off';
+  end;
+end;
 procedure TTcp.FormCreate(Sender: TObject);
 var
   i: Integer;
@@ -21272,6 +21606,9 @@ procedure TTcp.FormDestroy(Sender: TObject);
 var
   ini: TMemIniFile;
 begin
+  if Assigned(FFlowTimer) then FFlowTimer.Enabled := False;
+  FreeAndNil(FFlowEngine);
+  FreeAndNil(FRD3Mode);
   if ExitCode = EXIT_NORMAL then
   begin
     if ConnectState > 0 then

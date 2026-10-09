@@ -9,6 +9,15 @@
 
 No repository file should depend on a maintainer-specific absolute path. Tool paths are supplied at build time.
 
+### Verified SUMS build workstation (2026-10-09)
+
+- **Canonical v3.0.0 baseline repository (v2.13.8.0):** `E:\Projects\third-party\relay-onion-control-panel-tunfix` (Git commit `96eac73`).
+- **RAD Studio 37.0:** `F:\Software\Embarcadero\Studio\37.0`; environment script `F:\Software\Embarcadero\Studio\37.0\bin\rsvars.bat`.
+- **Inno Setup 6:** `C:\Users\khosravi\AppData\Local\Programs\Inno Setup 6\ISCC.exe`.
+- **Build command:** `cmd /d /c "call F:\Software\Embarcadero\Studio\37.0\bin\rsvars.bat && msbuild source\TorControlPanel.dproj /t:Build /p:Config=Release /p:Platform=Win64 /v:m"` from repository root.
+- Preserve relative paths in the project; use these absolute paths only for SUMS workstation setup.
+
+
 ## Environment variables
 
 Set these for your workstation:
