@@ -60,3 +60,9 @@ The owner explicitly rejected Windows-wide snapshots and restoration as unnecess
 - `source/FlowNativeV3.pas`: dedicated Tor child is tracked by its **own process handle**, rather than reopening a PID that might have been recycled. Stop uses the owned handle; an already finished worker can be released on a subsequent Start. Empty candidate list fails closed without starting Tor.
 - `tools/RD3FlowLifecycleTests.dpr`: 100 repeated empty-profile load-reject/unload cycles: **PASS**, no child process created. Main Win64 build: **PASS**; RD3 state machine 100-transition tests: **PASS**.
 - These tests exercise failure lifecycle and management logic, not Chrome/Google login, extension operation, successful repeated live Tor cycling or UI acceptance. S1/S4/S5 are still open.
+
+## RD3-S2 iteration — selected exits in Flow profile (2026-10-09)
+
+- Owner directs successful HTTP-200 exits to be persisted as selected Relays **in the dedicated Flow profile**, not merely ranked from a parallel log. Implemented application-owned `FlowV3Native\Flow.ini` with `[Routers] ExitNodes=$fingerprint,...` and `[RelayIPs] fingerprint=IPv4`.
+- A successful exit updates the Flow profile. Startup intersects saved selections with discovered current candidates (matching both IP and fingerprint); when at least one matches, ONLY those selected candidates are attempted. The legacy `valid-exits.csv` is read for migration; otherwise discovery bootstraps the profile. This does NOT alter the user's ordinary Tor profile or Windows settings.
+- Native Delphi Win64 Build: PASS. `RD3SelectedExitTests.exe`: PASS, selected profile restricts two candidates to one selected exit. UI Relays tab visibility for the dedicated Flow profile and actual Tor live test remain unverified. No new installer in this iteration.

@@ -20890,6 +20890,8 @@ begin
       Arr[I] := Arr[J];
       Arr[J] := Candidate;
     end;
+    // Cached HTTP-200 exits go first; remaining current candidates are fallback.
+    Arr := TFlowNativeV3.PrioritizeCached(Arr);
     FFlowBrowserLaunched := False;
     FFlowEngine.Start(ProgramDir, UserDir, Arr);
   finally

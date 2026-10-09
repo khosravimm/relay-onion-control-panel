@@ -4,7 +4,7 @@ interface
 
 uses
   Winapi.Windows, System.SysUtils, System.Classes, System.IOUtils,
-  System.SyncObjs, System.Generics.Collections,
+  System.SyncObjs, System.Generics.Collections, System.IniFiles,
   System.Net.HttpClient, System.Net.URLClient;
 
 type
@@ -40,9 +40,114 @@ type
       const Candidates: TArray<TFlowCandidateV3>);
     procedure Stop;
     procedure Snapshot(out Status: Integer; out MessageText, ExitIP: string);
+    class function PrioritizeCached(const Candidates: TArray<TFlowCandidateV3>):
+      TArray<TFlowCandidateV3>; static;
   end;
 
 implementation
+
+function ValidFingerprint(const S: string): Boolean;
+var C: Char;
+begin
+  Result := Length(S) = 40;
+  if not Result then Exit;
+  for C in S do
+    if not CharInSet(C, ['0'..'9','A'..'F','a'..'f']) then Exit(False);
+end;
+
+function FlowCachePath: string;
+begin
+  Result := TPath.Combine(TPath.Combine(GetEnvironmentVariable('LOCALAPPDATA'),
+    'RelayOnionControlPanel\FlowV3Native'), 'valid-exits.csv');
+end;
+
+function FlowProfilePath: string;
+begin
+  Result := TPath.Combine(TPath.Combine(GetEnvironmentVariable('LOCALAPPDATA'),
+    'RelayOnionControlPanel\FlowV3Native'), 'Flow.ini');
+end;
+
+procedure RememberFlowExit(const Entry: TFlowCandidateV3);
+var Ini: TMemIniFile; Current, Token: string;
+begin
+  if not ValidFingerprint(Entry.Fingerprint) then Exit;
+  ForceDirectories(ExtractFilePath(FlowProfilePath));
+  Ini := TMemIniFile.Create(FlowProfilePath, TEncoding.UTF8);
+  try
+    Current := Ini.ReadString('Routers', 'ExitNodes', '');
+    Token := '$' + UpperCase(Entry.Fingerprint);
+    if Pos(Token, UpperCase(Current)) = 0 then
+    begin
+      if Current <> '' then Current := Current + ',';
+      Ini.WriteString('Routers', 'ExitNodes', Current + Token);
+    end;
+    // Fingerprint-to-IP map for the application-owned Flow profile.
+    Ini.WriteString('RelayIPs', UpperCase(Entry.Fingerprint), Entry.IPv4);
+    Ini.UpdateFile;
+  finally Ini.Free end;
+end;
+
+class function TFlowNativeV3.PrioritizeCached(
+  const Candidates: TArray<TFlowCandidateV3>): TArray<TFlowCandidateV3>;
+var Lines: TStringList; Parts: TArray<string>; Entry: TFlowCandidateV3;
+    Seen: TDictionary<string, Boolean>; I, N: Integer; Ini: TMemIniFile;
+    Selected, FP, IP, RawFP: string;
+begin
+  Result := Copy(Candidates);
+  Lines := TStringList.Create;
+  Seen := TDictionary<string, Boolean>.Create;
+  try
+    N := 0;
+    // The Flow profile's selected Relays are authoritative for cache-first.
+    if FileExists(FlowProfilePath) then
+    begin
+      Ini := TMemIniFile.Create(FlowProfilePath, TEncoding.UTF8);
+      try
+        Selected := Ini.ReadString('Routers', 'ExitNodes', '');
+        for RawFP in Selected.Split([',']) do
+        begin
+          FP := Trim(RawFP);
+          if FP.StartsWith('$') then Delete(FP, 1, 1);
+          if not ValidFingerprint(FP) or Seen.ContainsKey(UpperCase(FP)) then Continue;
+          IP := Ini.ReadString('RelayIPs', UpperCase(FP), '');
+          for Entry in Candidates do
+            if SameText(Entry.Fingerprint, FP) and SameText(Entry.IPv4, IP) then
+            begin
+              Result[N] := Entry;
+              Seen.Add(UpperCase(FP), True);
+              Inc(N);
+              Break;
+            end;
+        end;
+      finally Ini.Free end;
+    end;
+    // Read the previous successful-exit log only as a one-time migration source.
+    if FileExists(FlowCachePath) then
+      Lines.LoadFromFile(FlowCachePath, TEncoding.UTF8);
+    for I := Lines.Count-1 downto 0 do
+    begin
+      Parts := Lines[I].Split([',']);
+      if (Length(Parts) < 2) or not ValidFingerprint(Parts[0]) or
+         Seen.ContainsKey(UpperCase(Parts[0])) then Continue;
+      for Entry in Candidates do
+        if SameText(Entry.Fingerprint, Parts[0]) and
+          SameText(Entry.IPv4, Parts[1]) then
+        begin
+          Seen.Add(UpperCase(Parts[0]), True);
+          Result[N] := Entry;
+          Inc(N);
+          RememberFlowExit(Entry);
+          Break;
+        end;
+    end;
+    if N > 0 then
+      SetLength(Result, N); // Flow profile selected exits ONLY.
+    // Otherwise fall back to fresh discovery to bootstrap an empty/stale profile.
+  finally
+    Seen.Free;
+    Lines.Free;
+  end;
+end;
 
 constructor TFlowNativeV3.Create;
 begin
@@ -227,6 +332,7 @@ begin
       end;
       if OK then
       begin
+        RememberFlowExit(Entry);
         TFile.AppendAllText(TPath.Combine(FRoot, 'exit-health.log'),
           Format('%s,%s,http=200,verified%s', [
             FormatDateTime('yyyy-mm-dd hh:nn:ss', Now), Entry.IPv4,
