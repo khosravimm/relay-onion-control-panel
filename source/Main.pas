@@ -1718,6 +1718,10 @@ type
     shpTunLamp: TShape;
     btnFlowToggle: TBitBtn;
     FFlowRequested: Boolean;
+    FFlowSavedProxy: Boolean;
+    FFlowSavedTun: Boolean;
+    FFlowSavedSocks: Boolean;
+    FFlowSavedExitNodes: string;
     FFlowEngine: TFlowNativeV3;
     FRD3Mode: TRD3ModeController;
     FFlowTransitionToken: Cardinal;
@@ -20275,6 +20279,9 @@ begin
 
   // Compact window: do not move or cover the toolbar row.
   FFlowRequested := False;
+  FFlowSavedProxy := False;
+  FFlowSavedTun := False;
+  FFlowSavedSocks := False;
   FFlowEngine := TFlowNativeV3.Create;
   FRD3Mode := TRD3ModeController.Create;
   FFlowTransitionToken := 0;
@@ -20427,19 +20434,29 @@ begin
   btnSystemProxyToggle.Caption := 'Proxy';
   btnTunToggle.Caption := 'TUN (LAN)';
 
-  SetNetworkButtonLamp(btnSystemProxyToggle, FSystemProxyState, 2);
-  SetNetworkButtonLamp(btnTunToggle, FTunState, 1);
+  if FFlowRequested then
+  begin
+    SetNetworkButtonLamp(btnSystemProxyToggle, NI_OFF, 2);
+    SetNetworkButtonLamp(btnTunToggle, NI_OFF, 1);
+  end
+  else
+  begin
+    SetNetworkButtonLamp(btnSystemProxyToggle, FSystemProxyState, 2);
+    SetNetworkButtonLamp(btnTunToggle, FTunState, 1);
+  end;
 
   btnSystemProxyToggle.Font.Style := [];
   btnTunToggle.Font.Style := [];
-  if FSystemProxyState = NI_ACTIVE then
+  if (not FFlowRequested) and (FSystemProxyState = NI_ACTIVE) then
     btnSystemProxyToggle.Font.Style := [fsBold];
   if FTunState = NI_ACTIVE then
     btnTunToggle.Font.Style := [fsBold];
 
   if Assigned(FMachineService) then
   begin
-    if FTunEnabled then
+    if FFlowRequested then
+      ModeText := 'flow'
+    else if FTunEnabled then
       ModeText := 'tun'
     else if FSystemProxyEnabled then
       ModeText := 'proxy'
@@ -20902,116 +20919,118 @@ end;
 procedure TTcp.FlowToggleClick(Sender: TObject);
 var
   Token: Cardinal;
-  Reason: string;
+  Reason, StopError, SelectedExits, ProfileFile: string;
+  ProfileIni: TMemIniFile;
 begin
+  if not Assigned(FNetworkIntegration) then Exit;
   if FFlowRequested then
   begin
-    LaunchFlowAction('Stop');
     FFlowRequested := False;
-    if (FFlowTransitionToken <> 0) and FRD3Mode.Pending then
-      FRD3Mode.Rollback(FFlowTransitionToken)
-    else if FRD3Mode.BeginTransition(rmOff, Token, Reason) then
-      FRD3Mode.Commit(Token, rmOff);
+    FSystemProxyEnabled := False;
+    FTunEnabled := False;
+    ApplyNetworkIntegrationDesired;
+    SetTorConfig('ExitNodes', FFlowSavedExitNodes);
+    cbUseSOCKS.Checked := FFlowSavedSocks;
+    FSystemProxyEnabled := FFlowSavedProxy;
+    FTunEnabled := FFlowSavedTun;
+    FSystemProxyState := IfThen(FFlowSavedProxy, NI_STARTING, NI_OFF);
+    FTunState := IfThen(FFlowSavedTun, NI_STARTING, NI_OFF);
+    FAllowTunElevationOnce := False;
+    SaveNetworkIntegrationPreferences;
+    ApplyOptions(True);
+    ApplyNetworkIntegrationDesired;
+    if Assigned(FRD3Mode) then
+    begin
+      if FRD3Mode.Pending then
+        FRD3Mode.Rollback(FFlowTransitionToken)
+      else if FRD3Mode.BeginTransition(rmOff, Token, Reason) then
+        FRD3Mode.Commit(Token, rmOff);
+    end;
     FFlowTransitionToken := 0;
-  end
+    UpdateNetworkIntegrationControls;
+    Exit;
+  end;
+  if FNetworkIntegrationSuspended or
+     (Assigned(FRD3Mode) and FRD3Mode.Pending) then
+  begin
+    ShowBalloon('Wait until current network operation finishes.', 'Flow', False, mtWarning);
+    Exit;
+  end;
+  FFlowSavedProxy := FSystemProxyEnabled;
+  FFlowSavedTun := FTunEnabled;
+  FFlowSavedSocks := cbUseSOCKS.Checked;
+  FFlowSavedExitNodes := GetTorConfig('ExitNodes', '', [cfFindComments]);
+  ProfileFile := TPath.Combine(TPath.Combine(
+    GetEnvironmentVariable('LOCALAPPDATA'), 'RelayOnionControlPanel\FlowV3Native'), 'Flow.ini');
+  SelectedExits := '';
+  if FileExists(ProfileFile) then
+  begin
+    ProfileIni := TMemIniFile.Create(ProfileFile, TEncoding.UTF8);
+    try
+      SelectedExits := Trim(ProfileIni.ReadString('Routers', 'ExitNodes', ''));
+    finally ProfileIni.Free end;
+  end;
+  if SelectedExits = '' then SelectedExits := '{us}';
+  if Assigned(FRD3Mode) and FRD3Mode.BeginTransition(rmFlow, Token, Reason) then
+    FFlowTransitionToken := Token
   else
   begin
-    if FNetworkIntegrationSuspended then
-    begin
-      ShowBalloon('Wait for scanner network suspension to finish.',
-        'Flow', False, mtWarning);
-      Exit;
-    end;
-    // Refuse to alter an active TUN or system proxy while switching.
-    // A safe, verified transition adapter is required before automatic switching.
-    if FSystemProxyEnabled or FTunEnabled then
-    begin
-      ShowBalloon('Disable Proxy or TUN first to use Flow safely.',
-        'Flow', False, mtWarning);
-      Exit;
-    end;
-    if not FRD3Mode.BeginTransition(rmFlow, Token, Reason) then
-    begin
-      ShowBalloon('Flow transition rejected: ' + Reason, 'Flow', False, mtWarning);
-      Exit;
-    end;
-    FFlowTransitionToken := Token;
-    FFlowRequested := True;
-    LaunchFlowAction('Start');
-    if not FFlowRequested then
-    begin
-      FRD3Mode.Rollback(FFlowTransitionToken);
-      FFlowTransitionToken := 0;
-    end;
-    if FFlowRequested then
-      ShowBalloon('Flow: checking current US relays through native Delphi.',
-        'Flow', False, mtInfo);
+    ShowBalloon('Flow transition rejected: ' + Reason, 'Flow', False, mtWarning);
+    Exit;
   end;
+  FFlowRequested := True;
+  FSystemProxyEnabled := False;
+  FTunEnabled := False;
+  if not FNetworkIntegration.Apply(False, False, LOOPBACK_ADDRESS,
+    udSOCKSPort.Position, False, StopError) then
+  begin
+    FFlowRequested := False;
+    FRD3Mode.Rollback(FFlowTransitionToken);
+    FFlowTransitionToken := 0;
+    ShowBalloon(StopError, 'Flow', True, mtError);
+    Exit;
+  end;
+  SetTorConfig('ExitNodes', SelectedExits);
+  cbUseSOCKS.Checked := True;
+  FSystemProxyEnabled := True;
+  FTunEnabled := False;
+  FSystemProxyState := NI_STARTING;
+  FTunState := NI_OFF;
+  ApplyOptions(True);
+  SetTorConfig('ExitNodes', SelectedExits);
+  ApplyNetworkIntegrationDesired;
   UpdateNetworkIntegrationControls;
 end;
 
 procedure TTcp.FlowTick(Sender: TObject);
-var
-  Status: Integer;
-  Msg, Ip, ChromePath, ChromeParams, ProfilePath, ExtensionPath: string;
 begin
-  if not Assigned(btnFlowToggle) or not Assigned(FFlowEngine) then Exit;
-  FFlowEngine.Snapshot(Status, Msg, Ip);
-  if FFlowRequested and (Status = 3) then
+  if not Assigned(btnFlowToggle) then Exit;
+  if FFlowRequested then
   begin
-    if FRD3Mode.Pending then
-      FRD3Mode.Rollback(FFlowTransitionToken);
-    FFlowTransitionToken := 0;
-    FFlowRequested := False;
-    FFlowEngine.Stop;
-    ShowBalloon('Flow failed: ' + Msg, 'Flow', True, mtError);
-  end;
-  if FFlowRequested and (Status = 2) then
-  begin
-    if FRD3Mode.Pending and (FFlowTransitionToken <> 0) then
+    if Assigned(FNetworkIntegration) and FNetworkIntegration.SystemProxyActive and
+       (FSystemProxyState = NI_ACTIVE) then
     begin
-      FRD3Mode.Commit(FFlowTransitionToken, rmFlow);
-      FFlowTransitionToken := 0;
-    end;
-    SetNetworkButtonLamp(btnFlowToggle, NI_ACTIVE);
-    btnFlowToggle.Hint := 'Flow verified on US exit ' + Ip;
-    if not FFlowBrowserLaunched then
-    begin
-      FFlowBrowserLaunched := True;
-      ChromePath := TFlowBrowserV3.LocateChrome;
-      // RD-3: prefer the project's bundled, verified extension files.
-      ExtensionPath := TPath.Combine(ProgramDir, 'resources\ai-flow-bypasser');
-      if not FileExists(TPath.Combine(ExtensionPath, 'manifest.json')) then
-        ExtensionPath := TFlowBrowserV3.LocateBypassExtension;
-      ProfilePath := GetEnvironmentVariable('LOCALAPPDATA') +
-        '\RelayOnionControlPanel\FlowV3Native\chrome-profile';
-      if FileExists(ChromePath) then
+      if Assigned(FRD3Mode) and FRD3Mode.Pending and (FFlowTransitionToken <> 0) then
       begin
-        ChromeParams := '--user-data-dir="' + ProfilePath +
-          '" --no-first-run --proxy-server=socks5://127.0.0.1:19050 ';
-        if ExtensionPath <> '' then
-          ChromeParams := ChromeParams + '--disable-extensions-except="' +
-            ExtensionPath + '" --load-extension="' + ExtensionPath + '" ';
-        ChromeParams := ChromeParams + 'https://flow.google.com/';
-        if ShellExecuteW(Handle, 'open', PWideChar(ChromePath),
-          PWideChar(ChromeParams), nil, SW_SHOWNORMAL) <= 32 then
-        begin
-          FFlowBrowserLaunched := False;
-          ShowBalloon('Chrome failed to launch for Flow.', 'Flow', True, mtError);
-        end
-        else if ExtensionPath = '' then
-          ShowBalloon('AI Flow Bypasser was not found in the installed Chrome profiles.',
-            'Flow', False, mtWarning);
-      end
-      else
-        ShowBalloon('Chrome was not found. The Flow SOCKS5 proxy is ready.',
-          'Flow', False, mtWarning);
+        FRD3Mode.Commit(FFlowTransitionToken, rmFlow);
+        FFlowTransitionToken := 0;
+      end;
+      SetNetworkButtonLamp(btnFlowToggle, NI_ACTIVE);
+      btnFlowToggle.Hint := 'Flow proxy enabled; HTTP 200 not verified';
+    end
+    else if FSystemProxyState = NI_ERROR then
+    begin
+      if Assigned(FRD3Mode) and FRD3Mode.Pending then
+        FRD3Mode.Rollback(FFlowTransitionToken);
+      FFlowTransitionToken := 0;
+      SetNetworkButtonLamp(btnFlowToggle, NI_ERROR);
+      btnFlowToggle.Hint := 'Flow proxy failed; click Flow to restore mode';
+    end
+    else
+    begin
+      SetNetworkButtonLamp(btnFlowToggle, NI_STARTING);
+      btnFlowToggle.Hint := 'Starting Flow using existing Tor and Proxy';
     end;
-  end
-  else if FFlowRequested then
-  begin
-    SetNetworkButtonLamp(btnFlowToggle, NI_STARTING);
-    btnFlowToggle.Hint := Msg;
   end
   else
   begin
