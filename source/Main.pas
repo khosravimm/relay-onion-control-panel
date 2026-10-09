@@ -20919,7 +20919,7 @@ end;
 procedure TTcp.FlowToggleClick(Sender: TObject);
 var
   Token: Cardinal;
-  Reason, StopError, SelectedExits, ProfileFile: string;
+  Reason, StopError, SelectedExits, ProfileFile, LegacyFile: string;
   ProfileIni: TMemIniFile;
 begin
   if not Assigned(FNetworkIntegration) then Exit;
@@ -20960,8 +20960,33 @@ begin
   FFlowSavedTun := FTunEnabled;
   FFlowSavedSocks := cbUseSOCKS.Checked;
   FFlowSavedExitNodes := GetTorConfig('ExitNodes', '', [cfFindComments]);
+  // The same native profile layout used by TorControlPanel.dpr -profile=Flow.
+  // The active UserDir is ...\Tcp\<profile>\ or ...\Data\<profile>\.
   ProfileFile := TPath.Combine(TPath.Combine(
-    GetEnvironmentVariable('LOCALAPPDATA'), 'RelayOnionControlPanel\FlowV3Native'), 'Flow.ini');
+    ExtractFilePath(ExcludeTrailingPathDelimiter(UserDir)), 'Flow'), 'settings.ini');
+  ForceDirectories(ExtractFilePath(ProfileFile));
+  // Import the old Flow-only selected relay file once, without overriding
+  // any selection already made in the application's native Flow profile.
+  LegacyFile := TPath.Combine(TPath.Combine(GetEnvironmentVariable('LOCALAPPDATA'),
+    'RelayOnionControlPanel\FlowV3Native'), 'Flow.ini');
+  if FileExists(LegacyFile) then
+  begin
+    ProfileIni := TMemIniFile.Create(ProfileFile, TEncoding.UTF8);
+    try
+      if Trim(ProfileIni.ReadString('Routers', 'ExitNodes', '')) = '' then
+      begin
+        with TMemIniFile.Create(LegacyFile, TEncoding.UTF8) do
+        try
+          SelectedExits := Trim(ReadString('Routers', 'ExitNodes', ''));
+        finally Free end;
+        if SelectedExits <> '' then
+        begin
+          ProfileIni.WriteString('Routers', 'ExitNodes', SelectedExits);
+          ProfileIni.UpdateFile;
+        end;
+      end;
+    finally ProfileIni.Free end;
+  end;
   SelectedExits := '';
   if FileExists(ProfileFile) then
   begin

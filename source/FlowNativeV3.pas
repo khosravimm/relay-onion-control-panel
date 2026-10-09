@@ -63,8 +63,9 @@ end;
 
 function FlowProfilePath: string;
 begin
-  Result := TPath.Combine(TPath.Combine(GetEnvironmentVariable('LOCALAPPDATA'),
-    'RelayOnionControlPanel\FlowV3Native'), 'Flow.ini');
+  // Native -profile=Flow profile for standard (non-portable) installations.
+  Result := TPath.Combine(TPath.Combine(GetEnvironmentVariable('APPDATA'),
+    'Tcp\Flow'), 'settings.ini');
 end;
 
 procedure RememberFlowExit(const Entry: TFlowCandidateV3);
