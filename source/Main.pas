@@ -1760,9 +1760,13 @@ type
     procedure CopyGeneratedApiKeyClick(Sender: TObject);
   private
     FFlowFilter: TFlowExitFilter;
+    FFlowPrecheckStarted: Boolean;
     btnFlowFilter: TButton;
+    lsFlowStatus: TImageList;
+    FFlowLampOn: Boolean;
     lbFlowFilter: TLabel;
     tiFlowFilter: TTimer;
+    procedure BeginFlowCheck(Preflight: Boolean);
   public
     procedure FlowFilterClick(Sender: TObject);
     procedure FlowFilterTick(Sender: TObject);
@@ -6238,6 +6242,7 @@ var
   BridgesFullUpdate: Boolean;
   NetworkError: string;
 begin
+  FFlowPrecheckStarted := False;
   if Assigned(FFlowFilter) then FFlowFilter.Stop;
   if Assigned(FNetworkIntegration) then
   begin
@@ -20206,9 +20211,16 @@ begin
     Clipboard.AsText := FGeneratedApiKey;
 end;
 procedure TTcp.FlowFilterClick(Sender: TObject);
-var Candidates: TList<string>; Router: TPair<string, TRouterInfo>; Auth: string;
+var State: Integer; Text: string;
 begin
-  if FFlowFilter.Active then
+  if FFlowFilter.Active and not FFlowFilter.Restricted then
+  begin
+    FFlowFilter.Snapshot(State, Text);
+    if State <> 6 then
+    begin FFlowFilter.Activate; FlowFilterTick(nil); Exit end;
+    FFlowFilter.Stop;
+  end;
+  if FFlowFilter.Restricted then
   begin
     btnFlowFilter.Enabled := False;
     try FFlowFilter.Stop;
@@ -20216,9 +20228,15 @@ begin
     FlowFilterTick(nil);
     Exit;
   end;
+  BeginFlowCheck(False);
+end;
+
+procedure TTcp.BeginFlowCheck(Preflight: Boolean);
+var Candidates: TList<string>; Router: TPair<string, TRouterInfo>; Auth: string;
+begin
   if ConnectState <> 2 then
   begin
-    ShowMsg('ابتدا Tor را متصل کنید. / Connect Tor first.', 'Flow');
+    if not Preflight then ShowMsg('ابتدا Tor را متصل کنید. / Connect Tor first.', 'Flow');
     Exit;
   end;
   Candidates := TList<string>.Create;
@@ -20231,15 +20249,24 @@ begin
       CONTROL_AUTH_PASSWORD: Auth := TFlowExitFilter.Quote(Decrypt(ControlPassword, 'True'));
       else Auth := FileGetString(UserDir + 'control_auth_cookie', True);
     end;
-    FFlowFilter.Start(udControlPort.Position, Auth, UserDir + 'flow-exits.ini', Candidates.ToArray);
-    FlowFilterTick(nil);
+    FFlowPrecheckStarted := True;
+    FFlowFilter.Start(udControlPort.Position, Auth, UserDir + 'flow-exits.ini', Candidates.ToArray, Preflight);
   finally Candidates.Free end;
 end;
 
 procedure TTcp.FlowFilterTick(Sender: TObject);
 var State, P: Integer; Text: string;
 begin
+  if (ConnectState = 2) and not FFlowPrecheckStarted and not FFlowFilter.Active then
+    BeginFlowCheck(True);
   FFlowFilter.Snapshot(State, Text);
+  FFlowLampOn := not FFlowLampOn;
+  case State of
+    1, 4: if FFlowLampOn then btnFlowFilter.ImageIndex := 1
+          else btnFlowFilter.ImageIndex := 0;
+    2, 5: btnFlowFilter.ImageIndex := 2;
+    else btnFlowFilter.ImageIndex := 0;
+  end;
   P := Pos(' |', Text);
   lbFlowFilter.Font.Color := clWindowText;
   case State of
@@ -20251,6 +20278,16 @@ begin
     end;
     2: lbFlowFilter.Caption := StringReplace(StringReplace(Text,
       'US IPs | scan ', 'IPs | ', []), 'IPs | complete', 'IPs | done', []);
+    4: begin
+      if Text.StartsWith('Connecting to Tor') then lbFlowFilter.Caption := 'Waiting for Tor'
+      else lbFlowFilter.Caption := 'Precheck...';
+      lbFlowFilter.Font.Color := clGrayText;
+    end;
+    5: lbFlowFilter.Caption := 'Ready (Off)';
+    6: begin
+      lbFlowFilter.Caption := 'Off | retry';
+      lbFlowFilter.Font.Color := clGrayText;
+    end;
     3: begin
       lbFlowFilter.Caption := 'Unavailable';
       lbFlowFilter.Font.Color := clMaroon;
@@ -20265,6 +20302,24 @@ begin
 end;
 
 procedure TTcp.CreateNetworkIntegrationControls;
+  procedure AddStatusLamp(Color: TColor);
+  var Bitmap: TBitmap; Size, Inset: Integer;
+  begin
+    Size := lsFlowStatus.Width;
+    Inset := Max(1, Round(Scale));
+    Bitmap := TBitmap.Create;
+    try
+      Bitmap.SetSize(Size, Size);
+      Bitmap.Canvas.Brush.Color := clFuchsia;
+      Bitmap.Canvas.FillRect(Rect(0, 0, Size, Size));
+      Bitmap.Canvas.Pen.Color := Color;
+      Bitmap.Canvas.Brush.Color := Color;
+      Bitmap.Canvas.Ellipse(Inset, Inset, Size - Inset, Size - Inset);
+      lsFlowStatus.AddMasked(Bitmap, clFuchsia);
+    finally
+      Bitmap.Free;
+    end;
+  end;
   function ModeButton(X: Integer; const CaptionText: string;
     ClickHandler: TNotifyEvent): TButton;
   begin
@@ -20306,6 +20361,16 @@ begin
 
   btnFlowFilter := ModeButton(507, 'Google AI', FlowFilterClick);
   btnFlowFilter.Name := 'btnFlowExitFilter';
+  lsFlowStatus := TImageList.Create(Self);
+  lsFlowStatus.Width := Max(8, Round(10 * Scale));
+  lsFlowStatus.Height := lsFlowStatus.Width;
+  AddStatusLamp(clGray);
+  AddStatusLamp(RGB(235, 175, 0));
+  AddStatusLamp(RGB(35, 160, 70));
+  btnFlowFilter.Images := lsFlowStatus;
+  btnFlowFilter.ImageAlignment := Vcl.StdCtrls.iaLeft;
+  btnFlowFilter.ImageMargins.Left := Round(4 * Scale);
+  btnFlowFilter.ImageIndex := 0;
   lbFlowFilter := ModeStatus(507);
   tiFlowFilter := TTimer.Create(Self);
   tiFlowFilter.Interval := 500;

@@ -1,6 +1,6 @@
-import socket, subprocess, pathlib, tempfile, time
+import socket, subprocess, pathlib, tempfile, time, os
 ROOT=pathlib.Path(__file__).resolve().parents[1]
-BUNDLE=ROOT/'release/RelayOnionControlPanel-2.13.8.0-TorExpertBundle-15.0.24-windows-x64'
+BUNDLE=pathlib.Path(os.environ.get('FLOW_TEST_BUNDLE', str(ROOT/'release/RelayOnionControlPanel-2.13.8.0-TorExpertBundle-15.0.24-windows-x64')))
 with tempfile.TemporaryDirectory(prefix='flow-tor-wire-') as temp:
  temp=pathlib.Path(temp)
  with socket.socket() as reserve:
@@ -37,7 +37,14 @@ with tempfile.TemporaryDirectory(prefix='flow-tor-wire-') as temp:
   assert 'STATE=3' in result.stdout
   after=query('GETCONF ExitNodes StrictNodes SocksPort HTTPTunnelPort DNSPort TransPort DisableNetwork __LeaveStreamsUnattached')
   assert before==after,(before,after)
-  print('PASS: real Tor 0.4.9.13 listener syntax, missing seed circuit waits with blocked listeners; exact settings restored, exact GETCONF restoration.')
+  result=subprocess.run([str(ROOT/'artifacts/FlowExitFilterHarness.exe'),str(port),'preflight-seed-timeout',auth,str(temp/'preflight-cache.ini')],capture_output=True,text=True,timeout=25)
+  print(result.stdout)
+  assert result.returncode==0,(result.stdout,result.stderr)
+  assert 'STATE=4' in result.stdout
+  after=query('GETCONF ExitNodes StrictNodes SocksPort HTTPTunnelPort DNSPort TransPort DisableNetwork __LeaveStreamsUnattached')
+  assert before==after,(before,after)
+  print('PASS: real Tor preflight stays pending beyond activation timeout and preserves normal configuration.')
+  print('PASS: real Tor listener syntax, missing seed circuit waits with blocked listeners; exact settings restored, exact GETCONF restoration.')
  finally:
   tor.terminate(); tor.wait(timeout=10)
 

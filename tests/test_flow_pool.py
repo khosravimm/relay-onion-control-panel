@@ -1,4 +1,4 @@
-import socket, threading, subprocess, tempfile, pathlib, shlex, time, configparser
+import socket, threading, subprocess, tempfile, pathlib, shlex, time, configparser, sys
 ROOT=pathlib.Path(__file__).resolve().parents[1]
 GOOD=[c*40 for c in 'ADEF1234569']; BAD='B'*40; FOREIGN='C'*40; PREFIX=['7'*40,'8'*40]
 class Server:
@@ -10,6 +10,9 @@ class Server:
    'HTTPTunnelPort':['0'],'DNSPort':['0'],'TransPort':['0'],
    'DisableNetwork':['0'],'__LeaveStreamsUnattached':['0']}
   self.config={k:list(v) for k,v in self.saved.items()}
+  if mode.startswith('preflight'):
+   self.saved['HTTPTunnelPort']=['127.0.0.1:19080']
+   self.config['HTTPTunnelPort']=['127.0.0.1:19080']
   self.sock=socket.socket(); self.sock.bind(('127.0.0.1',0)); self.sock.listen(); self.port=self.sock.getsockname()[1]
   self.proxy=socket.socket(); self.proxy.bind(('127.0.0.1',0)); self.proxy.listen(); self.proxyport=self.proxy.getsockname()[1]; self.connects=[]
   threading.Thread(target=self.accept,daemon=True).start()
@@ -28,9 +31,9 @@ class Server:
    threading.Thread(target=self.serve,args=(c,),daemon=True).start()
  def inject(self):
   time.sleep(.08)
-  if self.mode=='router-disconnect':
+  if self.mode in ['router-disconnect','preflight-router-disconnect']:
    self.events.shutdown(socket.SHUT_RDWR);return
-  if self.mode=='background':
+  if self.mode=='background' or self.mode.startswith('preflight'):
    self.events.sendall((f'650 STREAM 101 NEW 0 flow.google.com:443 SESSION_GROUP={self.group}\r\n'
     +'650 STREAM 102 NEW 0 example.com:443 SESSION_GROUP=-4\r\n'
     +f'650 STREAM 103 NEW 0 example.com:443 SOCKS_USERNAME="spoof SESSION_GROUP={self.group}" SESSION_GROUP=-4\r\n').encode())
@@ -73,6 +76,8 @@ class Server:
     elif cmd=='EXTENDCIRCUIT 0 purpose=general':
      self.seed_requested=True;out='250 EXTENDED 500\r\n'
     elif cmd.startswith('EXTENDCIRCUIT'):
+     if self.mode in ['preflight-guard-delay','preflight-guard-promote']:
+      assert time.monotonic()-self.started>=4,'GUARD_WAIT was accepted before Tor marked the circuit BUILT'
      path=cmd.split()[2].split(',');fp=path[-1].lstrip('$');self.extended.append(fp)
      assert path[:2]==['$'+x for x in PREFIX] and cmd.endswith('purpose=controller'),cmd
      cid=str(10+len(self.extended));self.circuits[cid]=fp
@@ -80,9 +85,11 @@ class Server:
      out=f'250 EXTENDED {cid}\r\n'
     elif cmd=='GETINFO circuit-status':
      lines=['1 BUILT '+','.join('$'+x for x in PREFIX+['9'*40])+' PURPOSE=GENERAL']
-     if self.mode in ['seed-delay','seed-timeout','seed-cancel','private-only']:
+     if self.mode in ['seed-delay','seed-timeout','seed-cancel','private-only','preflight-seed-timeout']:
       if self.mode!='seed-delay' or time.monotonic()-self.started<.6 or not self.seed_requested:lines=[]
      if self.mode=='private-only':lines=['1 BUILT '+','.join('$'+x for x in PREFIX+['9'*40])+' PURPOSE=CONTROLLER']
+     if self.mode in ['preflight-guard-delay','preflight-guard-promote'] and time.monotonic()-self.started<4:
+      lines=[x.replace(' BUILT ', ' GUARD_WAIT ') for x in lines]
      if self.mode in ['conflux-linked','conflux-unlinked']:
       lines=[x.replace('PURPOSE=GENERAL','PURPOSE='+self.mode.upper().replace('-','_')) for x in lines]
      if self.ready_at is not None:lines.append('999 BUILT '+','.join('$'+x for x in PREFIX+[GOOD[0]])+' PURPOSE=GENERAL')
@@ -96,13 +103,42 @@ class Server:
      assert cmd.split()[1].isdigit(),cmd
      self.circuits.pop(cmd.split()[1],None);out='250 OK\r\n'
     elif cmd.startswith(('ATTACHSTREAM','CLOSESTREAM')):out='250 OK\r\n'
-    elif cmd=='GETINFO net/listeners/httptunnel':out=f'250-net/listeners/httptunnel="127.0.0.1:{self.proxyport}"\r\n250 OK\r\n'
+    elif cmd=='GETINFO net/listeners/httptunnel':
+     listeners=[]
+     for v in self.config['HTTPTunnelPort']:
+      if v!='0':listeners.append('"127.0.0.1:'+str(self.proxyport if 'SessionGroup=' in v else 19080)+'"')
+     out='250-net/listeners/httptunnel='+' '.join(listeners)+'\r\n250 OK\r\n'
     else:self.unknown.append(cmd);out='552 Unexpected command\r\n'
     c.sendall(out.encode())
  def check(self,ready):
   assert not self.unknown,self.unknown
   assert self.config==self.saved,(self.config,self.saved)
   assert BAD not in self.extended and FOREIGN not in self.extended
+  if self.mode.startswith('preflight'):
+   promoted=self.mode in ['preflight-promote','preflight-guard-promote']
+   if promoted:
+    assert self.ready_at is not None and self.ready_at>=3
+    assert 'CLOSECIRCUIT 1' in self.commands,'Old unrestricted circuit survived promotion'
+   else:
+    assert self.ready_at is None
+    assert 'CLOSECIRCUIT 1' not in self.commands,'Preflight interrupted normal circuit'
+   for cmd,state in self.snapshots:
+    if promoted and ('SocksPort=0' in cmd or state['StrictNodes']==['1']):break
+    assert state['SocksPort']==self.saved['SocksPort'],cmd
+    assert state['ExitNodes']==self.saved['ExitNodes'],cmd
+    assert state['StrictNodes']==self.saved['StrictNodes'],cmd
+    assert state['DisableNetwork']==['0'],cmd
+    assert '127.0.0.1:19080' in state['HTTPTunnelPort'],cmd
+   if self.mode not in ['preflight-deny','preflight-router-disconnect','preflight-seed-timeout']:
+    # Injection races with promotion: restricted transition correctly closes
+    # ordinary streams instead of attaching them to an unrestricted circuit.
+    if promoted:
+     assert 'ATTACHSTREAM 102 0' in self.commands or 'CLOSESTREAM 102 1' in self.commands,self.commands
+    else:
+     assert 'ATTACHSTREAM 102 0' in self.commands,self.commands
+    assert not any(c.startswith('ATTACHSTREAM 102 ') and c!='ATTACHSTREAM 102 0' for c in self.commands)
+   if self.mode=='preflight-cap':assert len(self.extended)==10,self.extended
+   self.sock.close();self.proxy.close();return
   if ready:
    assert self.ready_at==3,(self.ready_at,self.commands)
    post=self.commands.index(next(c for c in self.commands if c.startswith('SETCONF SocksPort="127.0.0.1:19050')))
@@ -140,7 +176,9 @@ with tempfile.TemporaryDirectory(prefix='flow-cache-unit-') as temp:
  p=subprocess.run([str(ROOT/'artifacts/FlowExitFilterHarness.exe'),'0','cache-unit','00',str(pathlib.Path(temp)/'cache.ini')],capture_output=True,text=True,timeout=10)
  print(p.stdout.strip());assert p.returncode==0,(p.stdout,p.stderr)
 
-for mode in ['inline-circuits','cache-deny','cache-sort','seed-delay','seed-timeout','seed-cancel','private-only','conflux-linked','conflux-unlinked','allow','cap','background','duplicate','deny','wrong-circuit','cancel','wire-deny','expired','family','router-disconnect','fail-member']:
+modes=['preflight','preflight-promote','preflight-guard-delay','preflight-guard-promote','preflight-deny','preflight-cap','preflight-router-disconnect','preflight-seed-timeout','inline-circuits','cache-deny','cache-sort','seed-delay','seed-timeout','seed-cancel','private-only','conflux-linked','conflux-unlinked','allow','cap','background','duplicate','deny','wrong-circuit','cancel','wire-deny','expired','family','router-disconnect','fail-member']
+for mode in (sys.argv[1:] or modes):
+ assert mode in modes,mode
  with tempfile.TemporaryDirectory(prefix='flow-pool-test-') as temp:
   cachepath=pathlib.Path(temp)/'cache.ini'
   if mode in ['cache-sort','cache-deny']:

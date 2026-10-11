@@ -22,13 +22,14 @@ end;
 function TTestFilter.Probe: Boolean;
 begin
   Inc(FCount);
+  if ParamStr(2).StartsWith('preflight') then Sleep(150);
   SetProbeLatencyMs(100 * FCount);
   if ParamStr(2) = 'duplicate' then SetProbeIP('192.0.2.1')
   else SetProbeIP('192.0.2.' + IntToStr(FCount));
   if ParamStr(2) = 'cancel' then Sleep(400);
   if (ParamStr(2) = 'background') and (FCount >= 4) then Sleep(500);
   if (ParamStr(2) = 'router-disconnect') and (FCount >= 4) then Sleep(500);
-  Result := (ParamStr(2) <> 'deny') and (ParamStr(2) <> 'cache-deny') and not ((ParamStr(2) = 'background') and (FCount >= 4));
+  Result := (ParamStr(2) <> 'deny') and (ParamStr(2) <> 'preflight-deny') and (ParamStr(2) <> 'cache-deny') and not ((ParamStr(2) = 'background') and (FCount >= 4));
   if (ParamStr(2) = 'fail-member') and (FCount >= 4) then Result := False;
 end;
 procedure TestCache(const Path: string);
@@ -109,12 +110,14 @@ begin
     Values := [StringOfChar('B',40), StringOfChar('C',40), StringOfChar('A',40),
       StringOfChar('D',40), StringOfChar('E',40), StringOfChar('F',40),
       StringOfChar('1',40), StringOfChar('2',40)];
-    if ParamStr(2) = 'cap' then
+    if (ParamStr(2) = 'cap') or (ParamStr(2) = 'preflight-cap') then
       Values := [StringOfChar('A',40), StringOfChar('D',40), StringOfChar('E',40),
         StringOfChar('F',40), StringOfChar('1',40), StringOfChar('2',40),
         StringOfChar('3',40), StringOfChar('4',40), StringOfChar('5',40),
         StringOfChar('6',40), StringOfChar('9',40)];
     Limit := 100;
+    if ParamStr(2) = 'preflight-seed-timeout' then Limit := 35;
+    if ParamStr(2) = 'preflight-guard-promote' then Limit := 30;
     if (ParamStr(2) = 'cancel') or (ParamStr(2) = 'seed-cancel') then Limit := 1;
     if (ParamStr(2) = 'live') or (ParamStr(2) = 'wire-deny') then
     begin
@@ -123,14 +126,51 @@ begin
     end
     else Filter := TTestFilter.Create;
     try
-      Filter.Start(StrToInt(ParamStr(1)), ParamStr(3), ParamStr(4), Values);
+      Filter.Start(StrToInt(ParamStr(1)), ParamStr(3), ParamStr(4), Values, ParamStr(2).StartsWith('preflight'));
       for I := 1 to Limit do
       begin
         Sleep(100);
         Filter.Snapshot(State, Text);
-        if State in [2,3] then Break;
+        if State in [2,3,5,6] then Break;
       end;
       Writeln('STATE=', State, ' ', Text);
+      if ParamStr(2).StartsWith('preflight') then
+      begin
+        if Filter.Restricted then raise Exception.Create('Preflight activated restrictions');
+        if (ParamStr(2) = 'preflight-promote') or (ParamStr(2) = 'preflight-guard-promote') then
+        begin
+          if ParamStr(2) = 'preflight-promote' then
+          begin
+            if State <> 5 then raise Exception.Create('Preflight not ready');
+          end
+          else if State <> 4 then raise Exception.Create('Guard wait must remain pending');
+          Filter.Activate;
+          for I := 1 to 100 do
+          begin
+            Sleep(100); Filter.Snapshot(State, Text);
+            if State in [2,3] then Break;
+          end;
+          Writeln('ACTIVATED=', State, ' ', Text);
+          if State <> 2 then raise Exception.Create('Promotion not ready');
+        end
+        else if ParamStr(2) = 'preflight-seed-timeout' then
+        begin
+          if State <> 4 then raise Exception.Create('Background guard wait stopped early');
+        end
+        else if ParamStr(2) = 'preflight-deny' then
+        begin
+          if State <> 6 then raise Exception.Create('Denied preflight reported ready');
+        end
+        else if (ParamStr(2) = 'preflight-router-disconnect') and (State in [5,6]) then
+          Writeln('Router failure handled without restricting normal traffic')
+        else if State <> 5 then raise Exception.Create('Preflight not ready');
+        if ParamStr(2) = 'preflight-cap' then Sleep(4000) else Sleep(2000);
+        if ParamStr(2) = 'preflight-router-disconnect' then
+        begin
+          Filter.Snapshot(State, Text);
+          if State <> 6 then raise Exception.Create('Router failure did not stop precheck safely');
+        end;
+      end;
       if State = 2 then Sleep(700);
       if (ParamStr(2) = 'fail-member') and (State = 2) then Sleep(1600);
       if (ParamStr(2) = 'allow') and (State <> 2) then raise Exception.Create('Expected ready');

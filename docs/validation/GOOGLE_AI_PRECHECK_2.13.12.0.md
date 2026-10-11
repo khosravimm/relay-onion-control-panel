@@ -1,0 +1,21 @@
+# Google AI precheck — 2.13.12.0 PREVIEW
+
+Project-machine validation, 2026-10-11. No laptop access.
+
+After Tor bootstrap completes, the UI timer starts one background precheck for that Tor session. It does not wait for validation to finish. The worker waits 1.5 seconds, runs at lower thread priority and checks candidates serially with a 200 ms pause between checks while the filter is off. It loads recent, faster cache hints first; each exit still requires actual-US-IP and canonical Flow HTTPS validation.
+
+Precheck preserves the original user listeners, ExitNodes, StrictNodes and DisableNetwork values, keeps ordinary circuits alive and adds a private HTTP CONNECT listener with its own SessionGroup. A separate STREAM event controller routes only that listener to controller probe circuits; ordinary traffic continues using Tor's normal selection. This controller temporarily owns stream attachment and restores the original configuration on cancellation or precheck failure. Existing HTTP listeners are preserved alongside the probe listener. The restoration marker and existing control ownership checks also apply to precheck.
+
+At three verified distinct IPs the button status is `Ready (Off)`: prepared exits do not mean the filter is active. Discovery stops at ten, with health revalidation retained. Explicit activation promotes this worker's verified pool rather than starting a new cache-only scan. It blocks new user stream attachments during transition, closes user listeners and old unrestricted circuits, installs the strict verified exit pool, then reopens the original user listeners when at least three verified IPs remain. Promotion does not toggle DisableNetwork off and on. OFF restores the original settings; a new Start session automatically begins precheck again. Clicking before readiness uses the same worker and waits with user traffic blocked after the worker reaches the activation transition.
+
+Validation: Win64 build; cache unit tests; 27 mock-control scenarios including normal traffic/listener preservation, promotion, denied exits, ten-exit stop, precheck seed timeout and router disconnection; real Tor control tests for exact restoration and nonrestrictive precheck seed timeout all passed. Timing assertions in failure/cap tests allow for asynchronous completion.
+
+Final tested Win64 executable SHA-256: 950b4972b54eaa434bd020f452f0ac51c57b9c3f2208d9f34db98468b60a0d15.
+
+Native final candidate: Tor completed bootstrap before the precheck listener opened; Ready (Off) displayed while a normal non-US circuit remained usable. Read-only control capture confirmed empty ExitNodes, StrictNodes=0, SocksPort=127.0.0.1:19060 and DisableNetwork=0 during precheck. Explicit promotion at 14:10:31 reused eight verified exits, reopened user listeners under StrictNodes=1 and continued discovery. Local captures are in artifacts/visual-evidence/precheck-21312-*.json; runtime profiles, authentication cookies and cache files are not distributed.
+
+This is a local preview. No account sign-in or Flow content generation claim. Background HTTPS/circuit checks consume some bandwidth; this change avoids gating bootstrap on scanning and is not a measured throughput guarantee.
+
+A preceding native run rendered Flow but later failed closed with Unavailable; its exception was not logged by that candidate. Fatal worker diagnostics are now recorded. A repeated final run reached ten at 14:18:33, rendered the Flow gallery and kept StrictNodes=1, SocksPort=127.0.0.1:19060, DisableNetwork=0 through the subsequent observation. The earlier failure has not been attributed or claimed fixed; laptop/network qualification remains open.
+
+Final qualification follow-up: forced browser reload rendered the Flow gallery; US exit 23.128.248.175 displayed. The first five-minute health cycle successfully revalidated pool members at 14:22–14:23 while preserving ten active IPs and user traffic. Isolated current-user fresh install/uninstall passed and installed executable SHA-256 matched the final tested build. Package source hashes, manifest and private-data checks passed. Installer SHA-256: f9eff56a7b85acd7882bdc59096a7421c58bdf9121d60e131143a004fbb96b78. No GitHub publication for this local preview.

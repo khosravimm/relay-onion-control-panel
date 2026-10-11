@@ -32,6 +32,9 @@ type
     FProbeGroup: Integer;
     FProbeAttachments: Integer;
     FProbeLatencyMs: UInt64;
+    FPreflight: Boolean;
+    FGuardWaiting: Boolean;
+    FRestrictRequested, FRestrictedApplied, FUserReady: Integer;
     procedure StartRouter;
     procedure StopRouter;
     procedure RouteStreams;
@@ -62,7 +65,9 @@ type
     constructor Create;
     destructor Destroy; override;
     procedure Start(Port: Integer; const Auth, Cache: string;
-      const Candidates: TArray<string>);
+      const Candidates: TArray<string>; Preflight: Boolean = False);
+    procedure Activate;
+    function Restricted: Boolean;
     procedure Stop;
     procedure TorStopped;
     function Active: Boolean;
@@ -176,10 +181,14 @@ begin
 end;
 
 procedure TFlowExitFilter.Start(Port: Integer; const Auth, Cache: string;
-  const Candidates: TArray<string>);
+  const Candidates: TArray<string>; Preflight: Boolean);
 begin
   if Active then Exit;
   FPort := Port; FAuth := Auth; FCache := Cache;
+  FPreflight := Preflight;
+  TInterlocked.Exchange(FRestrictRequested, Ord(not Preflight));
+  TInterlocked.Exchange(FRestrictedApplied, 0);
+  TInterlocked.Exchange(FUserReady, 0);
   if FileExists(FCache + '.restore') then
   begin
     FAuth := '';
@@ -194,10 +203,24 @@ begin
   FRouterFailed := 0;
   FSaved.Clear;
   FCancel.ResetEvent;
-  Status(1, 'Checking US exits for Google Flow');
+  Status(IfThen(Preflight, 4, 1), 'Checking US exits for Google Flow');
   FWorker := TThread.CreateAnonymousThread(Execute);
   FWorker.FreeOnTerminate := False;
+  if Preflight then FWorker.Priority := tpLower;
   FWorker.Start;
+end;
+
+function TFlowExitFilter.Restricted: Boolean;
+begin
+  Result := Active and (TInterlocked.CompareExchange(FRestrictRequested, 0, 0) <> 0);
+end;
+
+procedure TFlowExitFilter.Activate;
+begin
+  if not Active then Exit;
+  TInterlocked.Exchange(FRestrictRequested, 1);
+  FWorker.Priority := tpNormal;
+  Status(1, 'Activating Google AI; waiting for verified exits');
 end;
 
 procedure TFlowExitFilter.Stop;
@@ -440,9 +463,12 @@ function TFlowExitFilter.CircuitPrefix: string;
 var Line: string; Fields, Nodes: TArray<string>;
 begin
   Result := '';
+  FGuardWaiting := False;
   for Line in Info('circuit-status').Split([#10]) do
   begin
     Fields := Trim(Line).Split([' '], TStringSplitOptions.ExcludeEmpty);
+    if (Length(Fields) >= 3) and (Fields[1] = 'GUARD_WAIT') and
+      (Pos('IS_INTERNAL', Line) = 0) then FGuardWaiting := True;
     if (Length(Fields) < 3) or (Fields[1] <> 'BUILT') or
       ((Pos('PURPOSE=GENERAL', Line) = 0) and
        (Pos('PURPOSE=CONFLUX_LINKED', Line) = 0) and
@@ -463,32 +489,45 @@ begin
 end;
 
 function TFlowExitFilter.WaitForCircuitPrefix: string;
-var Started, NextRequest, Stamp: UInt64;
+var Started, NextRequest, Stamp: UInt64; Activated: Boolean; WaitingFor: string;
 begin
   Result := '';
   Started := GetTickCount64;
   NextRequest := Started;
+  Activated := Restricted;
   Trace('Waiting for a Tor-built three-hop exit circuit');
   while FCancel.WaitFor(0) <> wrSignaled do
   begin
     Result := CircuitPrefix;
     if Result <> '' then Exit;
     Stamp := GetTickCount64;
-    if Stamp - Started >= CircuitWaitTimeout then
+    // Background preflight must survive slow guard selection. Promotion starts
+    // its own bounded wait, without inheriting time spent in the background.
+    if FPreflight and not Activated and Restricted then
+    begin
+      Activated := True;
+      Started := Stamp;
+      NextRequest := Stamp;
+    end;
+    if (not FPreflight or Activated) and (Stamp - Started >= CircuitWaitTimeout) then
       raise Exception.Create('Tor circuit not ready after waiting; check Tor connection and retry Google AI');
-    Status(1, Format('Connecting to Tor (%d seconds); waiting for a three-hop circuit',
-      [(Stamp - Started) div 1000]));
+    if FGuardWaiting then WaitingFor := 'entry guard selection'
+    else WaitingFor := 'a three-hop circuit';
+    Status(IfThen(FPreflight and not Restricted, 4, 1), Format('Connecting to Tor (%d seconds); waiting for %s',
+      [(Stamp - Started) div 1000, WaitingFor]));
     if Stamp >= NextRequest then
     begin
       // Tor selects the entire path using its own guard/path rules.
-      // All user listeners are closed while the seed circuit is built.
+      // Preflight preserves normal listeners; explicit activation blocks users.
       try
         SetCommand('EXTENDCIRCUIT 0 purpose=general');
         Trace('Requested an automatic Tor circuit');
       except
         on E: Exception do Trace('Tor circuit request deferred: ' + E.Message);
       end;
-      NextRequest := Stamp + 15000;
+      if FPreflight and not Activated and (Stamp - Started >= CircuitWaitTimeout) then
+        NextRequest := Stamp + 60000
+      else NextRequest := Stamp + 15000;
     end;
     if FCancel.WaitFor(250) = wrSignaled then Break;
   end;
@@ -557,9 +596,12 @@ begin
             TInterlocked.Increment(FProbeAttachments);
           end;
         end
+        else if Restricted and (TInterlocked.CompareExchange(FUserReady, 0, 0) = 0) then
+          SetCommand('CLOSESTREAM ' + StreamID + ' 1')
         else
-          // Automatic selection can only use GENERAL circuits and the strict
-          // validated ExitNodes pool. CONTROLLER circuits are never eligible.
+          // Preflight keeps normal Tor selection. Activation applies the strict
+          // verified pool before reporting ON. Private controller circuits are
+          // never eligible for Tor's automatic user selection.
           SetCommand('ATTACHSTREAM ' + StreamID + ' 0');
       except
         on E: Exception do
@@ -587,8 +629,21 @@ begin
       begin
         TInterlocked.Exchange(FRouterFailed, 1);
         Trace('Stream router failed: ' + E.Message);
-        try SetCommand('SETCONF SocksPort=0 DNSPort=0 TransPort=0 DisableNetwork=1'); except end;
-        Status(3, 'Flow stream router failed; Tor traffic blocked');
+        if Restricted then
+        begin
+          try SetCommand('SETCONF SocksPort=0 DNSPort=0 TransPort=0 DisableNetwork=1'); except end;
+          Status(3, 'Flow stream router failed; Tor traffic blocked');
+        end
+        else
+        begin
+          // Restore automatic attachment immediately so ordinary traffic keeps
+          // working even when the background event connection is lost.
+          try SetCommand(SavedCommand(False));
+          except
+            try SetCommand('SETCONF DisableNetwork=1'); except end;
+          end;
+          Status(6, 'Precheck stopped: stream router unavailable');
+        end;
       end;
     end;
   end;
@@ -701,7 +756,8 @@ end;
 procedure TFlowExitFilter.Execute;
 var Reply: TStringList; Candidates, Pool: TList<string>; Cache: TFlowExitCache;
     IPs: TDictionary<string, string>; Checked: TDictionary<string, UInt64>;
-    FP, Cached, Listener, Nodes, Oldest: string;
+    FP, Cached, Listener, Nodes, Oldest, OriginalListeners, ProbeConfig: string;
+    Listeners: TArray<string>;
     I, J: Integer; UsersOpen, OK, DiscoveryComplete: Boolean; Stamp: UInt64;
 
   procedure SaveCache;
@@ -715,6 +771,17 @@ var Reply: TStringList; Candidates, Pool: TList<string>; Cache: TFlowExitCache;
   procedure ApplyPool;
   var Item, Line: string; Fields, Path: TArray<string>;
   begin
+    if not Restricted then Exit;
+    if TInterlocked.CompareExchange(FRestrictedApplied, 0, 0) = 0 then
+    begin
+      // Promotion preserves the worker's freshly verified pool, but removes
+      // every unrestricted user circuit before reopening any user listener.
+      SetCommand('SETCONF SocksPort=0 DNSPort=0 TransPort=0 HTTPTunnelPort=' +
+        Quote('127.0.0.1:' + FProbePort + ' SessionGroup=' + IntToStr(FProbeGroup)));
+      CloseCircuits;
+      TInterlocked.Exchange(FRestrictedApplied, 1);
+      Trace('Activating restricted Google AI pool');
+    end;
     Nodes := '';
     for Item in Pool do
     begin
@@ -726,13 +793,14 @@ var Reply: TStringList; Candidates, Pool: TList<string>; Cache: TFlowExitCache;
     if Nodes = '' then Nodes := '{us}';
     if (Pool.Count < MIN_VALID_IPS) and UsersOpen then
     begin
+      TInterlocked.Exchange(FUserReady, 0);
       SetCommand('SETCONF SocksPort=0 DNSPort=0 TransPort=0 HTTPTunnelPort=' +
         Quote('127.0.0.1:' + FProbePort + ' SessionGroup=' + IntToStr(FProbeGroup)));
       UsersOpen := False;
       CloseCircuits;
       Trace('Pool below minimum; user listeners closed');
     end;
-    SetCommand('SETCONF ExitNodes=' + Quote(Nodes) + ' StrictNodes=1');
+    SetCommand('SETCONF ExitNodes=' + Quote(Nodes) + ' StrictNodes=1 DisableNetwork=0');
     // Remove existing user circuits on an exit that has failed revalidation.
     for Line in Info('circuit-status').Split([#10]) do
     begin
@@ -752,6 +820,7 @@ var Reply: TStringList; Candidates, Pool: TList<string>; Cache: TFlowExitCache;
       SetCommand(SavedCommand(True) + ' HTTPTunnelPort=' +
         Quote('127.0.0.1:' + FProbePort + ' SessionGroup=' + IntToStr(FProbeGroup)));
       UsersOpen := True;
+      TInterlocked.Exchange(FUserReady, 1);
       Trace('READY: ' + IntToStr(Pool.Count) + ' distinct US IPs; user listeners opened; background scan continues');
     end;
   end;
@@ -785,6 +854,8 @@ begin
       FSocket.Connect('127.0.0.1', IntToStr(FPort));
       if FSocket.LastError <> 0 then raise Exception.Create('Tor control unavailable');
       SetCommand('AUTHENTICATE ' + FAuth);
+      if FPreflight and not Restricted then
+        if FCancel.WaitFor(1500) = wrSignaled then Exit;
       Reply := Command('GETCONF ' + CONFIG_KEYS);
       try FSaved.Assign(Reply);
       finally Reply.Free end;
@@ -793,24 +864,47 @@ begin
       FPrefix := CircuitPrefix;
       if FPrefix = '' then
       begin
-        FSaved.SaveToFile(FCache + '.restore', TEncoding.UTF8);
-        BlockUsers;
-        SetCommand('SETCONF ExitNodes="{us}" StrictNodes=1 DisableNetwork=0');
+        if not FPreflight then
+        begin
+          FSaved.SaveToFile(FCache + '.restore', TEncoding.UTF8);
+          BlockUsers;
+          SetCommand('SETCONF ExitNodes="{us}" StrictNodes=1 DisableNetwork=0');
+        end;
         FPrefix := WaitForCircuitPrefix;
       end;
       FProbeGroup := 100000000 + Random(900000000);
       for Cached in FSaved do
         if Pos('SessionGroup=' + IntToStr(FProbeGroup), Cached) > 0 then
           raise Exception.Create('Probe session group conflict; retry Flow');
+      OriginalListeners := Info('net/listeners/httptunnel');
       FSaved.SaveToFile(FCache + '.restore', TEncoding.UTF8);
-      BlockUsers;
+      if not FPreflight then
+      begin
+        BlockUsers;
+        TInterlocked.Exchange(FRestrictedApplied, 1);
+      end;
       StartRouter;
-      SetCommand('SETCONF ExitNodes="{us}" StrictNodes=1 ' +
-        '__LeaveStreamsUnattached=1 HTTPTunnelPort=' +
-        Quote('127.0.0.1:auto SessionGroup=' + IntToStr(FProbeGroup)) + ' DisableNetwork=0');
+      ProbeConfig := 'SETCONF __LeaveStreamsUnattached=1';
+      if FPreflight then
+      begin
+        // Preserve all normal listeners and exit policy during preflight.
+        for Cached in FSaved do
+          if Cached.StartsWith('HTTPTunnelPort=') and
+            (Copy(Cached, 16, MaxInt) <> '0') then
+            ProbeConfig := ProbeConfig + ' HTTPTunnelPort=' + Quote(Copy(Cached, 16, MaxInt));
+      end
+      else ProbeConfig := ProbeConfig + ' ExitNodes="{us}" StrictNodes=1 DisableNetwork=0';
+      FChanged := True;
+      SetCommand(ProbeConfig + ' HTTPTunnelPort=' +
+        Quote('127.0.0.1:auto SessionGroup=' + IntToStr(FProbeGroup)));
       Listener := Info('net/listeners/httptunnel');
-      Listener := StringReplace(Trim(Copy(Listener, Pos('=', Listener)+1, MaxInt)), '"', '', [rfReplaceAll]);
-      FProbePort := Copy(Listener, LastDelimiter(':', Listener)+1, MaxInt);
+      Listeners := ControlFields(Trim(Copy(Listener, Pos('=', Listener)+1, MaxInt)));
+      for Cached in Listeners do
+      begin
+        Listener := StringReplace(Cached, '"', '', [rfReplaceAll]);
+        if (not FPreflight) or (Pos('"' + Listener + '"', OriginalListeners) = 0) then
+          FProbePort := Copy(Listener, LastDelimiter(':', Listener)+1, MaxInt);
+      end;
       if StrToIntDef(FProbePort, 0) = 0 then raise Exception.Create('No probe listener');
       for FP in Cache.OrderedHints do
         if FingerprintValid(FP) and not Candidates.Contains(FP) then Candidates.Add(FP);
@@ -821,9 +915,13 @@ begin
       I := 0;
       while FCancel.WaitFor(0) <> wrSignaled do
       begin
+        if FPreflight and not Restricted then
+          if FCancel.WaitFor(200) = wrSignaled then Break;
         if TInterlocked.CompareExchange(FRouterFailed, 0, 0) <> 0 then
           raise Exception.Create('Flow stream router failed');
         if not ConsensusCurrent then raise Exception.Create('No current Tor consensus');
+        if Restricted and (TInterlocked.CompareExchange(FRestrictedApplied, 0, 0) = 0) then
+          ApplyPool;
         // Revalidate old members while discovery continues. Background probes
         // never alter the user pool or close healthy user circuits.
         Oldest := ''; Stamp := GetTickCount64;
@@ -834,13 +932,25 @@ begin
         else if not DiscoveryComplete and (I < Candidates.Count) then begin FP := Candidates[I]; Inc(I) end
         else
         begin
-          if not UsersOpen then
+          if not Restricted then
+          begin
+            if Pool.Count >= MIN_VALID_IPS then
+              Status(5, Format('Ready: %d verified US IPs; filter OFF; precheck complete', [Pool.Count]))
+            else Status(6, Format('Precheck: only %d / %d valid IPs; normal Tor remains available', [Pool.Count, MIN_VALID_IPS]));
+          end
+          else if not UsersOpen then
             Status(3, Format('Only %d / %d valid US IPs; Tor traffic blocked', [Pool.Count, MIN_VALID_IPS]))
           else Status(2, Format('%d US IPs | scan complete', [Pool.Count]));
           if FCancel.WaitFor(1000) = wrSignaled then Break;
           Continue;
         end;
-        if UsersOpen then
+        if not Restricted then
+        begin
+          if Pool.Count >= MIN_VALID_IPS then
+            Status(5, Format('Ready: %d verified US IPs; filter OFF; precheck %d/%d', [Pool.Count, I, Candidates.Count]))
+          else Status(4, Format('Precheck: %d/%d IPs | scan %d/%d; normal Tor remains available', [Pool.Count, MIN_VALID_IPS, I, Candidates.Count]));
+        end
+        else if UsersOpen then
           Status(2, Format('%d US IPs | scan %d/%d', [Pool.Count, I, Candidates.Count]))
         else Status(1, Format('%d/%d IPs | scan %d/%d', [Pool.Count, MIN_VALID_IPS, I, Candidates.Count]));
         try
@@ -895,18 +1005,38 @@ begin
     except
       on E: Exception do
       begin
-        if FChanged then
-          try SetCommand('SETCONF SocksPort=0 DNSPort=0 TransPort=0 DisableNetwork=1'); except end;
-        Status(3, E.Message + ' (Flow not ready)');
+        try Trace('Filter stopped: ' + E.Message); except end;
+        if Restricted then
+        begin
+          if FChanged then
+            try SetCommand('SETCONF SocksPort=0 DNSPort=0 TransPort=0 DisableNetwork=1'); except end;
+          Status(3, E.Message + ' (Flow not ready)');
+        end
+        else
+        begin
+          if FChanged then
+          try
+            StopRouter;
+            SetCommand(SavedCommand(False));
+            FChanged := False;
+            DeleteFile(FCache + '.restore');
+          except
+            try SetCommand('SETCONF DisableNetwork=1'); except end;
+          end;
+          Status(6, 'Precheck unavailable: ' + E.Message);
+        end;
         FCancel.WaitFor(INFINITE);
       end;
     end;
     if FChanged then
     begin
       try
-        SetCommand('SETCONF DisableNetwork=1');
+        if Restricted or (TInterlocked.CompareExchange(FRestrictedApplied, 0, 0) <> 0) then
+          SetCommand('SETCONF DisableNetwork=1');
         StopRouter;
-        CloseCircuits;
+        CloseProbeCircuit;
+        if Restricted or (TInterlocked.CompareExchange(FRestrictedApplied, 0, 0) <> 0) then
+          CloseCircuits;
         SetCommand(SavedCommand(False));
         DeleteFile(FCache + '.restore');
         Status(0, 'Flow filter OFF; previous Tor settings restored');
