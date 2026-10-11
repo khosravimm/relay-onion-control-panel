@@ -1,9 +1,9 @@
-import socket, threading, subprocess, tempfile, pathlib, shlex, time
+import socket, threading, subprocess, tempfile, pathlib, shlex, time, configparser
 ROOT=pathlib.Path(__file__).resolve().parents[1]
 GOOD=[c*40 for c in 'ADEF1234569']; BAD='B'*40; FOREIGN='C'*40; PREFIX=['7'*40,'8'*40]
 class Server:
  def __init__(self, mode):
-  self.mode=mode; self.commands=[]; self.circuits={}; self.events=None; self.group=None
+  self.started=time.monotonic(); self.seed_requested=False; self.mode=mode; self.commands=[]; self.circuits={}; self.events=None; self.group=None
   self.ready_at=None; self.snapshots=[]; self.unknown=[]; self.extended=[]
   self.saved={'ExitNodes':['$'+'9'*40],'StrictNodes':['0'],
    'SocksPort':['127.0.0.1:19050 IsolateSOCKSAuth','[::1]:19050'],
@@ -70,6 +70,8 @@ class Server:
     elif cmd=='GETINFO ns/all':out='250+ns/all=\r\n.\r\n250 OK\r\n'
     elif cmd.startswith('GETINFO ip-to-country/'):
      out='250-'+cmd.split()[1]+'='+('de' if cmd.endswith('.2') else 'us')+'\r\n250 OK\r\n'
+    elif cmd=='EXTENDCIRCUIT 0 purpose=general':
+     self.seed_requested=True;out='250 EXTENDED 500\r\n'
     elif cmd.startswith('EXTENDCIRCUIT'):
      path=cmd.split()[2].split(',');fp=path[-1].lstrip('$');self.extended.append(fp)
      assert path[:2]==['$'+x for x in PREFIX] and cmd.endswith('purpose=controller'),cmd
@@ -78,12 +80,21 @@ class Server:
      out=f'250 EXTENDED {cid}\r\n'
     elif cmd=='GETINFO circuit-status':
      lines=['1 BUILT '+','.join('$'+x for x in PREFIX+['9'*40])+' PURPOSE=GENERAL']
+     if self.mode in ['seed-delay','seed-timeout','seed-cancel','private-only']:
+      if self.mode!='seed-delay' or time.monotonic()-self.started<.6 or not self.seed_requested:lines=[]
+     if self.mode=='private-only':lines=['1 BUILT '+','.join('$'+x for x in PREFIX+['9'*40])+' PURPOSE=CONTROLLER']
+     if self.mode in ['conflux-linked','conflux-unlinked']:
+      lines=[x.replace('PURPOSE=GENERAL','PURPOSE='+self.mode.upper().replace('-','_')) for x in lines]
      if self.ready_at is not None:lines.append('999 BUILT '+','.join('$'+x for x in PREFIX+[GOOD[0]])+' PURPOSE=GENERAL')
      for cid,fp in self.circuits.items():
       if self.mode=='wrong-circuit':fp='9'*40
       lines.append(cid+' BUILT '+','.join('$'+x for x in PREFIX+[fp])+' PURPOSE=CONTROLLER')
-     out='250+circuit-status=\r\n'+'\r\n'.join(lines)+'\r\n.\r\n250 OK\r\n'
-    elif cmd.startswith('CLOSECIRCUIT'):self.circuits.pop(cmd.split()[1],None);out='250 OK\r\n'
+     if self.mode=='inline-circuits' and len(lines)==1:
+      out='250-circuit-status='+lines[0]+'\r\n250 OK\r\n'
+     else:out='250+circuit-status=\r\n'+'\r\n'.join(lines)+'\r\n.\r\n250 OK\r\n'
+    elif cmd.startswith('CLOSECIRCUIT'):
+     assert cmd.split()[1].isdigit(),cmd
+     self.circuits.pop(cmd.split()[1],None);out='250 OK\r\n'
     elif cmd.startswith(('ATTACHSTREAM','CLOSESTREAM')):out='250 OK\r\n'
     elif cmd=='GETINFO net/listeners/httptunnel':out=f'250-net/listeners/httptunnel="127.0.0.1:{self.proxyport}"\r\n250 OK\r\n'
     else:self.unknown.append(cmd);out='552 Unexpected command\r\n'
@@ -110,6 +121,13 @@ class Server:
   if self.mode=='cap':
    assert len(self.extended)==10,('Discovery continued past ten',self.extended)
    assert GOOD[10] not in self.extended
+  if self.mode in ['seed-delay','seed-timeout','seed-cancel','private-only']:
+   assert self.seed_requested
+   assert not any(state['SocksPort'][0]!='0' and state['StrictNodes']==['1'] and len(state['ExitNodes'][0].split(','))<3 for _,state in self.snapshots)
+  if self.mode in ['seed-timeout','seed-cancel','private-only']:
+   assert not self.extended
+  if self.mode in ['conflux-linked','conflux-unlinked']:
+   assert not self.seed_requested
   if self.mode=='wire-deny':assert any('check.torproject.org:443' in x for x in self.connects)
   if self.mode=='router-disconnect':
    assert any(cmd.startswith('SETCONF SocksPort=0') and 'DisableNetwork=1' in cmd for cmd in self.commands[post:]),'Router loss did not block users'
@@ -118,11 +136,31 @@ class Server:
    assert any(state['SocksPort']==['0'] and state['StrictNodes']==['1'] and len(state['ExitNodes'][0].split(','))<3 for cmd,state in self.snapshots[5:])
   self.sock.close();self.proxy.close()
 
-for mode in ['allow','cap','background','duplicate','deny','wrong-circuit','cancel','wire-deny','expired','family','router-disconnect','fail-member']:
+with tempfile.TemporaryDirectory(prefix='flow-cache-unit-') as temp:
+ p=subprocess.run([str(ROOT/'artifacts/FlowExitFilterHarness.exe'),'0','cache-unit','00',str(pathlib.Path(temp)/'cache.ini')],capture_output=True,text=True,timeout=10)
+ print(p.stdout.strip());assert p.returncode==0,(p.stdout,p.stderr)
+
+for mode in ['inline-circuits','cache-deny','cache-sort','seed-delay','seed-timeout','seed-cancel','private-only','conflux-linked','conflux-unlinked','allow','cap','background','duplicate','deny','wrong-circuit','cancel','wire-deny','expired','family','router-disconnect','fail-member']:
  with tempfile.TemporaryDirectory(prefix='flow-pool-test-') as temp:
+  cachepath=pathlib.Path(temp)/'cache.ini'
+  if mode in ['cache-sort','cache-deny']:
+   cfg=configparser.ConfigParser();cfg['Flow']={'Fingerprints':','.join([GOOD[0],GOOD[1],GOOD[2]])}
+   for fp,latency in [(GOOD[0],300),(GOOD[1],100),(GOOD[2],200)]:
+    cfg['Exit.'+fp]={'Country':'us','ActualIP':'192.0.2.250','LastSuccessUtc':str(int(time.time())-60),'FlowLatencyMs':str(latency),'Successes':'2','Failures':'0','LastPassed':'1'}
+   with cachepath.open('w') as f:cfg.write(f)
   s=Server(mode);testmode='positive-rejected' if mode=='wrong-circuit' else mode
   p=subprocess.run([str(ROOT/'artifacts/FlowExitFilterHarness.exe'),str(s.port),testmode,'00',str(pathlib.Path(temp)/'cache.ini')],capture_output=True,text=True,timeout=20)
   print(mode+': '+p.stdout.strip())
   assert p.returncode==0,(p.stdout,p.stderr,s.commands)
-  s.check(mode in ['allow','cap','background','router-disconnect','fail-member'])
+  if mode=='cache-sort':
+   assert s.extended[:3]==[GOOD[1],GOOD[2],GOOD[0]],s.extended
+   cfg=configparser.ConfigParser();cfg.read(cachepath,encoding="utf-8-sig")
+   assert cfg['Exit.'+GOOD[1]]['ActualIP']=='192.0.2.1'
+   assert cfg['Exit.'+GOOD[1]]['Successes']=='3'
+   assert cfg['Flow']['SchemaVersion']=='2'
+  if mode=='cache-deny':
+   cfg=configparser.ConfigParser();cfg.read(cachepath,encoding='utf-8-sig')
+   assert all(cfg.getboolean('Exit.'+fp,'LastPassed') is False for fp in GOOD[:3])
+  assert not pathlib.Path(str(cachepath)+'.tmp').exists()
+  s.check(mode in ['inline-circuits','cache-sort','seed-delay','conflux-linked','conflux-unlinked','allow','cap','background','router-disconnect','fail-member'])
 print('PASS: three distinct IP threshold; stop discovery at ten; background discovery; private/user stream isolation; strict pool; cancellation; exact restoration.')

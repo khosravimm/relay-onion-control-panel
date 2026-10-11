@@ -5,7 +5,7 @@ interface
 uses
   Winapi.Windows, System.Math, System.SysUtils, System.Classes, System.SyncObjs, System.Generics.Collections,
   System.IniFiles, System.IOUtils, System.JSON, System.NetEncoding, System.DateUtils, System.Net.HttpClient, System.Net.URLClient,
-  blcksock;
+  blcksock, FlowExitCache;
 
 type
   TFlowExitFilter = class
@@ -31,11 +31,13 @@ type
     FProbeCircuit, FPrefix, FActualIP: string;
     FProbeGroup: Integer;
     FProbeAttachments: Integer;
+    FProbeLatencyMs: UInt64;
     procedure StartRouter;
     procedure StopRouter;
     procedure RouteStreams;
     function BuildProbeCircuit(const Fingerprint: string): Boolean;
     function CircuitPrefix: string;
+    function WaitForCircuitPrefix: string;
     function ProbePathAllowed(const Fingerprint: string): Boolean;
     procedure CloseProbeCircuit;
     procedure Status(State: Integer; const MessageText: string);
@@ -52,7 +54,9 @@ type
     procedure Execute;
   protected
     function RecheckInterval: UInt64; virtual;
+    function CircuitWaitTimeout: UInt64; virtual;
     procedure SetProbeIP(const IP: string);
+    procedure SetProbeLatencyMs(Value: UInt64);
     function Probe: Boolean; virtual;
   public
     constructor Create;
@@ -258,7 +262,11 @@ function TFlowExitFilter.Info(const Key: string): string;
 var Reply: TStringList;
 begin
   Reply := Command('GETINFO ' + Key);
-  try Result := Reply.Text;
+  try
+    if (Key = 'circuit-status') and (Reply.Count > 0) and
+      Reply[0].StartsWith('circuit-status=') then
+      Reply[0] := Copy(Reply[0], Length('circuit-status=') + 1, MaxInt);
+    Result := Reply.Text;
   finally Reply.Free end;
 end;
 
@@ -345,6 +353,8 @@ var Reply: TStringList; Line, ID: string; P: Integer;
 begin
   Reply := Command('GETINFO circuit-status');
   try
+    if (Reply.Count > 0) and Reply[0].StartsWith('circuit-status=') then
+      Reply[0] := Copy(Reply[0], Length('circuit-status=') + 1, MaxInt);
     for Line in Reply do
     begin
       P := Pos(' ', Line);
@@ -378,6 +388,7 @@ end;
 
 function TFlowExitFilter.Probe: Boolean;
 var Http: THTTPClient; Response: IHTTPResponse; Json: TJSONValue; IP, Country: string;
+    Started: UInt64; Body: string;
 begin
   Http := THTTPClient.Create;
   try
@@ -399,8 +410,11 @@ begin
       Trace('Actual exit IP ' + IP + ' country=us');
       SetProbeIP(IP);
     finally Json.Free end;
+    Started := GetTickCount64;
     Response := Http.Get(FLOW_URL);
-    Result := FlowResponseAccepted(Response.StatusCode, Response.ContentAsString) and
+    Body := Response.ContentAsString;
+    SetProbeLatencyMs(Max(UInt64(1), GetTickCount64 - Started));
+    Result := FlowResponseAccepted(Response.StatusCode, Body) and
       (TInterlocked.CompareExchange(FProbeAttachments, 0, 0) >= 2);
     FLastFailure := Format('Flow HTTP %d; accepted=%s', [Response.StatusCode, BoolToStr(Result, True)]);
     Trace(FLastFailure);
@@ -410,6 +424,11 @@ end;
 procedure TFlowExitFilter.SetProbeIP(const IP: string);
 begin
   FActualIP := IP;
+end;
+
+procedure TFlowExitFilter.SetProbeLatencyMs(Value: UInt64);
+begin
+  FProbeLatencyMs := Value;
 end;
 
 function TFlowExitFilter.RecheckInterval: UInt64;
@@ -425,13 +444,55 @@ begin
   begin
     Fields := Trim(Line).Split([' '], TStringSplitOptions.ExcludeEmpty);
     if (Length(Fields) < 3) or (Fields[1] <> 'BUILT') or
-      (Pos('PURPOSE=GENERAL', Line) = 0) or (Pos('IS_INTERNAL', Line) > 0) then Continue;
+      ((Pos('PURPOSE=GENERAL', Line) = 0) and
+       (Pos('PURPOSE=CONFLUX_LINKED', Line) = 0) and
+       (Pos('PURPOSE=CONFLUX_UNLINKED', Line) = 0)) or
+      (Pos('IS_INTERNAL', Line) > 0) then Continue;
     Nodes := Fields[2].Split([',']);
-    if (Length(Nodes) < 3) or not FingerprintValid(Copy(Nodes[0], 2, 40)) or
+    if (Length(Nodes) <> 3) or not FingerprintValid(Copy(Nodes[2], 2, 40)) or
+      not FingerprintValid(Copy(Nodes[0], 2, 40)) or
       not FingerprintValid(Copy(Nodes[1], 2, 40)) then Continue;
     Result := '$' + Copy(Nodes[0], 2, 40) + ',$' + Copy(Nodes[1], 2, 40);
     Exit;
   end;
+end;
+
+function TFlowExitFilter.CircuitWaitTimeout: UInt64;
+begin
+  Result := 120000;
+end;
+
+function TFlowExitFilter.WaitForCircuitPrefix: string;
+var Started, NextRequest, Stamp: UInt64;
+begin
+  Result := '';
+  Started := GetTickCount64;
+  NextRequest := Started;
+  Trace('Waiting for a Tor-built three-hop exit circuit');
+  while FCancel.WaitFor(0) <> wrSignaled do
+  begin
+    Result := CircuitPrefix;
+    if Result <> '' then Exit;
+    Stamp := GetTickCount64;
+    if Stamp - Started >= CircuitWaitTimeout then
+      raise Exception.Create('Tor circuit not ready after waiting; check Tor connection and retry Google AI');
+    Status(1, Format('Connecting to Tor (%d seconds); waiting for a three-hop circuit',
+      [(Stamp - Started) div 1000]));
+    if Stamp >= NextRequest then
+    begin
+      // Tor selects the entire path using its own guard/path rules.
+      // All user listeners are closed while the seed circuit is built.
+      try
+        SetCommand('EXTENDCIRCUIT 0 purpose=general');
+        Trace('Requested an automatic Tor circuit');
+      except
+        on E: Exception do Trace('Tor circuit request deferred: ' + E.Message);
+      end;
+      NextRequest := Stamp + 15000;
+    end;
+    if FCancel.WaitFor(250) = wrSignaled then Break;
+  end;
+  raise Exception.Create('Google AI activation cancelled');
 end;
 
 procedure TFlowExitFilter.StartRouter;
@@ -638,10 +699,18 @@ begin
 end;
 
 procedure TFlowExitFilter.Execute;
-var Reply: TStringList; Candidates, Pool, Hints: TList<string>; Ini: TMemIniFile;
+var Reply: TStringList; Candidates, Pool: TList<string>; Cache: TFlowExitCache;
     IPs: TDictionary<string, string>; Checked: TDictionary<string, UInt64>;
     FP, Cached, Listener, Nodes, Oldest: string;
     I, J: Integer; UsersOpen, OK, DiscoveryComplete: Boolean; Stamp: UInt64;
+
+  procedure SaveCache;
+  begin
+    try Cache.Save;
+    except
+      on E: Exception do Trace('Cache write skipped: ' + E.Message);
+    end;
+  end;
 
   procedure ApplyPool;
   var Item, Line: string; Fields, Path: TArray<string>;
@@ -685,19 +754,13 @@ var Reply: TStringList; Candidates, Pool, Hints: TList<string>; Ini: TMemIniFile
       UsersOpen := True;
       Trace('READY: ' + IntToStr(Pool.Count) + ' distinct US IPs; user listeners opened; background scan continues');
     end;
-    Ini := TMemIniFile.Create(FCache, TEncoding.UTF8);
-    try
-      Ini.EraseSection('Flow');
-      Ini.WriteString('Flow', 'Fingerprints', string.Join(',', Hints.ToArray));
-      Ini.WriteDateTime('Flow', 'CheckedAt', Now);
-      Ini.UpdateFile;
-    finally Ini.Free end;
   end;
 
   function CheckExit(const Item: string): Boolean;
   begin
     Result := False;
     FActualIP := '';
+    FProbeLatencyMs := 0;
     if not ValidateRelay(Item) then Exit;
     Trace('Testing US fingerprint ' + Item);
     try
@@ -712,7 +775,7 @@ begin
   FSocket := TTCPBlockSocket.Create;
   Candidates := TList<string>.Create;
   Pool := TList<string>.Create;
-  Hints := TList<string>.Create;
+  Cache := TFlowExitCache.Create(FCache);
   IPs := TDictionary<string, string>.Create;
   Checked := TDictionary<string, UInt64>.Create;
   UsersOpen := False;
@@ -728,7 +791,13 @@ begin
       if FSaved.IndexOf('__LeaveStreamsUnattached=1') >= 0 then
         raise Exception.Create('Another controller owns stream attachment');
       FPrefix := CircuitPrefix;
-      if FPrefix = '' then raise Exception.Create('No built three-hop Tor circuit; reconnect Tor and retry Flow');
+      if FPrefix = '' then
+      begin
+        FSaved.SaveToFile(FCache + '.restore', TEncoding.UTF8);
+        BlockUsers;
+        SetCommand('SETCONF ExitNodes="{us}" StrictNodes=1 DisableNetwork=0');
+        FPrefix := WaitForCircuitPrefix;
+      end;
       FProbeGroup := 100000000 + Random(900000000);
       for Cached in FSaved do
         if Pos('SessionGroup=' + IntToStr(FProbeGroup), Cached) > 0 then
@@ -743,12 +812,9 @@ begin
       Listener := StringReplace(Trim(Copy(Listener, Pos('=', Listener)+1, MaxInt)), '"', '', [rfReplaceAll]);
       FProbePort := Copy(Listener, LastDelimiter(':', Listener)+1, MaxInt);
       if StrToIntDef(FProbePort, 0) = 0 then raise Exception.Create('No probe listener');
-      Ini := TMemIniFile.Create(FCache, TEncoding.UTF8);
-      try
-        Cached := Ini.ReadString('Flow', 'Fingerprints', Ini.ReadString('Flow', 'Fingerprint', ''));
-        for FP in Cached.Split([',']) do
-          if FingerprintValid(FP) and not Candidates.Contains(FP) then Candidates.Add(FP);
-      finally Ini.Free end;
+      for FP in Cache.OrderedHints do
+        if FingerprintValid(FP) and not Candidates.Contains(FP) then Candidates.Add(FP);
+      Trace('Loaded ' + IntToStr(Candidates.Count) + ' cached hints, recent and fast first; all require fresh validation');
       for FP in FCandidates do
         if FingerprintValid(FP) and not Candidates.Contains(FP) then Candidates.Add(FP);
       if Length(FCandidates) = 0 then Discover(Candidates);
@@ -787,14 +853,15 @@ begin
           end;
           if OK then
           begin
-            if not Hints.Contains(FP) then Hints.Add(FP);
+            Cache.RecordSuccess(FP, FActualIP, FProbeLatencyMs);
+            SaveCache;
             if Pool.Contains(FP) or (Pool.Count < MAX_VALID_IPS) then
             begin
               if not Pool.Contains(FP) then Pool.Add(FP);
               IPs.AddOrSetValue(FP, FActualIP);
               Checked.AddOrSetValue(FP, GetTickCount64);
             end;
-            Trace('Validated ' + FP + ' IP=' + FActualIP + '; active=' + IntToStr(Pool.Count));
+            Trace('Validated ' + FP + ' IP=' + FActualIP + '; FlowMs=' + IntToStr(FProbeLatencyMs) + '; active=' + IntToStr(Pool.Count));
             ApplyPool;
             if (Pool.Count >= MAX_VALID_IPS) and not DiscoveryComplete then
             begin
@@ -802,19 +869,25 @@ begin
               Trace('Discovery stopped: 10 distinct valid IPs; periodic health checks continue');
             end;
           end
-          else if Pool.Contains(FP) then
+          else if FCancel.WaitFor(0) <> wrSignaled then
           begin
-            Pool.Remove(FP); Hints.Remove(FP); IPs.Remove(FP); Checked.Remove(FP);
-            ApplyPool;
+            Cache.RecordFailure(FP); SaveCache;
+            if Pool.Contains(FP) then
+            begin
+              Pool.Remove(FP); IPs.Remove(FP); Checked.Remove(FP);
+              ApplyPool;
+            end;
           end;
         except
           on E: Exception do
           begin
             if TInterlocked.CompareExchange(FRouterFailed, 0, 0) <> 0 then raise;
             FLastFailure := E.Message; Trace('Rejected: ' + E.Message);
+            if FCancel.WaitFor(0) <> wrSignaled then
+            begin Cache.RecordFailure(FP); SaveCache end;
             if Pool.Contains(FP) then
             begin
-              Pool.Remove(FP); Hints.Remove(FP); IPs.Remove(FP); Checked.Remove(FP); ApplyPool;
+              Pool.Remove(FP); IPs.Remove(FP); Checked.Remove(FP); ApplyPool;
             end;
           end;
         end;
@@ -845,7 +918,7 @@ begin
   finally
     StopRouter;
     FAuth := '';
-    Checked.Free; IPs.Free; Hints.Free; Pool.Free; Candidates.Free;
+    Checked.Free; IPs.Free; Cache.Free; Pool.Free; Candidates.Free;
     FSocket.Free; FSocket := nil;
   end;
 end;

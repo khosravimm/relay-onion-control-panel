@@ -31,13 +31,13 @@ with tempfile.TemporaryDirectory(prefix='flow-tor-wire-') as temp:
   assert any('SessionGroup=123456789' in line for line in isolation) and any('__LeaveStreamsUnattached=1' in line for line in isolation),isolation
   query('SETCONF SocksPort=auto HTTPTunnelPort=0 __LeaveStreamsUnattached=0 DisableNetwork=1')
   before=query('GETCONF ExitNodes StrictNodes SocksPort HTTPTunnelPort DNSPort TransPort DisableNetwork __LeaveStreamsUnattached')
-  result=subprocess.run([str(ROOT/'artifacts/FlowExitFilterHarness.exe'),str(port),'live',auth,str(temp/'cache.ini')],capture_output=True,text=True,timeout=25)
+  result=subprocess.run([str(ROOT/'artifacts/FlowExitFilterHarness.exe'),str(port),'seed-timeout',auth,str(temp/'cache.ini')],capture_output=True,text=True,timeout=25)
   print(result.stdout)
   assert result.returncode==0,result.stderr
   assert 'STATE=3' in result.stdout
   after=query('GETCONF ExitNodes StrictNodes SocksPort HTTPTunnelPort DNSPort TransPort DisableNetwork __LeaveStreamsUnattached')
   assert before==after,(before,after)
-  print('PASS: real Tor 0.4.9.13 listener syntax, missing seed circuit rejected before mutation, exact GETCONF restoration.')
+  print('PASS: real Tor 0.4.9.13 listener syntax, missing seed circuit waits with blocked listeners; exact settings restored, exact GETCONF restoration.')
  finally:
   tor.terminate(); tor.wait(timeout=10)
 

@@ -20244,7 +20244,8 @@ begin
   lbFlowFilter.Font.Color := clWindowText;
   case State of
     1: begin
-      if P > 0 then lbFlowFilter.Caption := StringReplace(Text, ' IPs | scan ', ' | ', [])
+      if Text.StartsWith('Connecting to Tor') then lbFlowFilter.Caption := 'Connecting...'
+      else if P > 0 then lbFlowFilter.Caption := StringReplace(Text, ' IPs | scan ', ' | ', [])
       else lbFlowFilter.Caption := 'Checking...';
       lbFlowFilter.Font.Color := clGrayText;
     end;
