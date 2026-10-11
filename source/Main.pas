@@ -1,4 +1,4 @@
-unit Main;
+﻿unit Main;
 
 interface
 
@@ -10,7 +10,7 @@ uses
   Vcl.ImgList, Vcl.Controls, Vcl.ExtCtrls, Vcl.Menus, Vcl.StdCtrls, Vcl.Grids, Vcl.ComCtrls,
   Vcl.Clipbrd, Vcl.Dialogs, Vcl.Graphics, Vcl.Themes, Vcl.Buttons, blcksock, dnssend, httpsend,
   pingsend, synautil, ConstData, Functions, Addons, Languages, ClassData, MachineInterface, TcpMcp,
-  NetworkIntegration;
+  NetworkIntegration, FlowExitFilter;
 
 type
   TUserGrid = class(TCustomGrid);
@@ -1708,14 +1708,10 @@ type
     FNetworkIntegrationSuspendUserChanged: Boolean;
     FAllowTunElevationOnce: Boolean;
     FNetworkIntegration: TNetworkIntegrationManager;
-    lbSystemProxyCaption: TLabel;
-    btnSystemProxyToggle: TBitBtn;
+    btnSystemProxyToggle: TButton;
     lbSystemProxyStatus: TLabel;
-    lbTunCaption: TLabel;
-    btnTunToggle: TBitBtn;
+    btnTunToggle: TButton;
     lbTunStatus: TLabel;
-    shpSystemProxyLamp: TShape;
-    shpTunLamp: TShape;
     FMachineSettings: TTcpMachineSettings;
     FMachineService: TTcpMachineService;
     FRestServer: TTcpRestServer;
@@ -1762,6 +1758,14 @@ type
     procedure MachineInterfaceChange(Sender: TObject);
     procedure GenerateApiKeyClick(Sender: TObject);
     procedure CopyGeneratedApiKeyClick(Sender: TObject);
+  private
+    FFlowFilter: TFlowExitFilter;
+    btnFlowFilter: TButton;
+    lbFlowFilter: TLabel;
+    tiFlowFilter: TTimer;
+  public
+    procedure FlowFilterClick(Sender: TObject);
+    procedure FlowFilterTick(Sender: TObject);
     procedure CreateNetworkIntegrationControls;
     procedure UpdateNetworkIntegrationControls;
     procedure ApplyNetworkIntegrationDesired;
@@ -1907,6 +1911,10 @@ end;
 
 procedure TTcp.SendCommand(const cmd: string);
 begin
+  if Assigned(FFlowFilter) and FFlowFilter.Active and
+    (cmd.StartsWith('SETCONF') or cmd.StartsWith('RESETCONF') or
+     cmd.StartsWith('EXTENDCIRCUIT') or cmd.StartsWith('SIGNAL RELOAD') or
+     cmd.StartsWith('ATTACHSTREAM')) then Exit;
   if Assigned(Controller) then
     Controller.SendData(cmd);
 end;
@@ -3637,24 +3645,22 @@ begin
         CircuitInfo.Streams := 0;
         CircuitInfo.BytesRead := 0;
         CircuitInfo.BytesWritten := 0;
-        if Pos('ONEHOP_TUNNEL', ParseStr[5]) <> 0 then
-          Include(CircuitInfo.BuildFlags, bfOneHop);
-        if Pos('IS_INTERNAL', ParseStr[5]) <> 0 then
-          Include(CircuitInfo.BuildFlags, bfInternal);
-        if Pos('NEED_CAPACITY', ParseStr[5]) <> 0 then
-          Include(CircuitInfo.BuildFlags, bfNeedCapacity);
-        if Pos('NEED_UPTIME', ParseStr[5]) <> 0 then
-          Include(CircuitInfo.BuildFlags, bfNeedUptime);
-        CircuitInfo.PurposeID := GetConstantIndex(SeparateRight(ParseStr[6], '='));
-        CircuitInfo.Flags := GetCircuitFlags(CircuitInfo);
-        for i := 7 to High(ParseStr) do
+        CircuitInfo.PurposeID := -1;
+        for i := 5 to High(ParseStr) do
         begin
-          if Pos('TIME_CREATED', ParseStr[i]) <> 0 then
+          if ParseStr[i].StartsWith('BUILD_FLAGS=') then
           begin
-            CircuitInfo.Date := ISO8601ToDate(SeparateRight(ParseStr[i], '='), False);
-            Break;
+            if Pos('ONEHOP_TUNNEL', ParseStr[i]) <> 0 then Include(CircuitInfo.BuildFlags, bfOneHop);
+            if Pos('IS_INTERNAL', ParseStr[i]) <> 0 then Include(CircuitInfo.BuildFlags, bfInternal);
+            if Pos('NEED_CAPACITY', ParseStr[i]) <> 0 then Include(CircuitInfo.BuildFlags, bfNeedCapacity);
+            if Pos('NEED_UPTIME', ParseStr[i]) <> 0 then Include(CircuitInfo.BuildFlags, bfNeedUptime);
           end;
+          if ParseStr[i].StartsWith('PURPOSE=') then
+            CircuitInfo.PurposeID := GetConstantIndex(SeparateRight(ParseStr[i], '='));
+          if ParseStr[i].StartsWith('TIME_CREATED=') then
+            CircuitInfo.Date := ISO8601ToDate(SeparateRight(ParseStr[i], '='), False);
         end;
+        CircuitInfo.Flags := GetCircuitFlags(CircuitInfo);
         ParseStr := ParseStr[4].Split([',']);
         DataStr := '';
         for i := 0 to High(ParseStr) do
@@ -3766,7 +3772,8 @@ begin
           begin
             if CircuitsDic.TryGetValue(CircuitID, CircuitInfo) then
             begin
-              if not (bfInternal in CircuitInfo.BuildFlags) then
+              if not (bfInternal in CircuitInfo.BuildFlags) and
+                (CircuitInfo.PurposeID <> CONTROLLER_CIRCUIT) then
               begin
                 ParseStr := CircuitInfo.Nodes.Split([',']);
                 Str := ParseStr[High(ParseStr)];
@@ -6231,6 +6238,7 @@ var
   BridgesFullUpdate: Boolean;
   NetworkError: string;
 begin
+  if Assigned(FFlowFilter) then FFlowFilter.Stop;
   if Assigned(FNetworkIntegration) then
   begin
     FNetworkIntegration.Apply(False, False, LOOPBACK_ADDRESS, udSOCKSPort.Position, False, NetworkError);
@@ -6239,6 +6247,8 @@ begin
     UpdateNetworkIntegrationControls;
   end;
   ProcessExists(TorMainProcess, True, True);
+  if Assigned(FFlowFilter) and not ProcessExists(TorMainProcess, True) then
+    FFlowFilter.TorStopped;
   if Assigned(Controller) then
     Controller.Terminate;
   if Assigned(Consensus) then
@@ -9949,6 +9959,12 @@ var
   sbFavoritesEntry, sbFavoritesMiddle, sbFavoritesExit, sbExcludeNodes: TStringBuilder;
   IPv4Cidrs: TCidrValuePairs;
 begin
+  if Assigned(FFlowFilter) and FFlowFilter.Active then
+  begin
+    if not AutoResolveErrors then
+      ShowMsg('برای تغییر تنظیمات، گزینه Flow را خاموش کنید. / Turn Flow OFF before changing settings.', 'Flow');
+    Exit;
+  end;
   if (cbxAuthMethod.ItemIndex = CONTROL_AUTH_PASSWORD) and (CheckEditString(edControlPassword.Text, '', True, lbControlPassword.Caption, edControlPassword) <> '') then
     Exit;
   if (cbxServerMode.ItemIndex > SERVER_MODE_NONE) and (CheckEditString(edNickname.Text, '', True, lbNickname.Caption, edNickname) <> '') then
@@ -12945,7 +12961,7 @@ begin
   if FormSize = 0 then
   begin
     H := Round(91 * Scale);
-    W := Round(430 * Scale);
+    W := Round(600 * Scale);
   end
   else
   begin
@@ -20189,126 +20205,125 @@ begin
   if FGeneratedApiKey <> '' then
     Clipboard.AsText := FGeneratedApiKey;
 end;
-procedure TTcp.CreateNetworkIntegrationControls;
+procedure TTcp.FlowFilterClick(Sender: TObject);
+var Candidates: TList<string>; Router: TPair<string, TRouterInfo>; Auth: string;
 begin
+  if FFlowFilter.Active then
+  begin
+    btnFlowFilter.Enabled := False;
+    try FFlowFilter.Stop;
+    finally btnFlowFilter.Enabled := True end;
+    FlowFilterTick(nil);
+    Exit;
+  end;
+  if ConnectState <> 2 then
+  begin
+    ShowMsg('ابتدا Tor را متصل کنید. / Connect Tor first.', 'Flow');
+    Exit;
+  end;
+  Candidates := TList<string>.Create;
+  try
+    for Router in RoutersDic do
+      if (rfExit in Router.Value.Flags) and not (rfBadExit in Router.Value.Flags) and
+        SameText(CountryCodes[GetCountryValue(Router.Value.IPv4Addr)], 'us') then
+        Candidates.Add(Router.Key);
+    case cbxAuthMethod.ItemIndex of
+      CONTROL_AUTH_PASSWORD: Auth := TFlowExitFilter.Quote(Decrypt(ControlPassword, 'True'));
+      else Auth := FileGetString(UserDir + 'control_auth_cookie', True);
+    end;
+    FFlowFilter.Start(udControlPort.Position, Auth, UserDir + 'flow-exits.ini', Candidates.ToArray);
+    FlowFilterTick(nil);
+  finally Candidates.Free end;
+end;
+
+procedure TTcp.FlowFilterTick(Sender: TObject);
+var State, P: Integer; Text: string;
+begin
+  FFlowFilter.Snapshot(State, Text);
+  P := Pos(' |', Text);
+  lbFlowFilter.Font.Color := clWindowText;
+  case State of
+    1: begin
+      if P > 0 then lbFlowFilter.Caption := StringReplace(Text, ' IPs | scan ', ' | ', [])
+      else lbFlowFilter.Caption := 'Checking...';
+      lbFlowFilter.Font.Color := clGrayText;
+    end;
+    2: lbFlowFilter.Caption := StringReplace(StringReplace(Text,
+      'US IPs | scan ', 'IPs | ', []), 'IPs | complete', 'IPs | done', []);
+    3: begin
+      lbFlowFilter.Caption := 'Unavailable';
+      lbFlowFilter.Font.Color := clMaroon;
+    end;
+    else begin
+      lbFlowFilter.Caption := 'Off';
+      lbFlowFilter.Font.Color := clGrayText;
+    end;
+  end;
+  lbFlowFilter.Hint := Text;
+  btnFlowFilter.Hint := 'Restrict Tor exits to verified US IPs for Google Flow' + sLineBreak + Text;
+end;
+
+procedure TTcp.CreateNetworkIntegrationControls;
+  function ModeButton(X: Integer; const CaptionText: string;
+    ClickHandler: TNotifyEvent): TButton;
+  begin
+    Result := TButton.Create(Self);
+    Result.Parent := paButtons;
+    Result.SetBounds(Round(X * Scale), Round(3 * Scale), Round(90 * Scale), Round(35 * Scale));
+    Result.Caption := CaptionText;
+    Result.OnClick := ClickHandler;
+    Result.ShowHint := True;
+  end;
+  function ModeStatus(X: Integer): TLabel;
+  begin
+    Result := TLabel.Create(Self);
+    Result.Parent := paButtons;
+    Result.AutoSize := False;
+    Result.SetBounds(Round(X * Scale), Round(40 * Scale), Round(90 * Scale), Round(13 * Scale));
+    Result.Alignment := taCenter;
+    Result.EllipsisPosition := epEndEllipsis;
+    Result.ShowHint := True;
+    Result.Caption := 'Off';
+    Result.Font.Color := clGrayText;
+  end;
+begin
+  FFlowFilter := TFlowExitFilter.Create;
   FSystemProxyEnabled := False;
   FTunEnabled := False;
   FSystemProxyState := NI_OFF;
   FTunState := NI_OFF;
 
-  lbSystemProxyCaption := TLabel.Create(Self);
-  lbSystemProxyCaption.Parent := paButtons;
-  lbSystemProxyCaption.Visible := False;
-
-  lbTunCaption := TLabel.Create(Self);
-  lbTunCaption.Parent := paButtons;
-  lbTunCaption.Visible := False;
-
-  lbSystemProxyStatus := TLabel.Create(Self);
-  lbSystemProxyStatus.Parent := paButtons;
-  lbSystemProxyStatus.Visible := False;
-
-  lbTunStatus := TLabel.Create(Self);
-  lbTunStatus.Parent := paButtons;
-  lbTunStatus.Visible := False;
-
-  btnSystemProxyToggle := TBitBtn.Create(Self);
-  btnSystemProxyToggle.Parent := paButtons;
-  btnSystemProxyToggle.Left := Round(323 * Scale);
-  btnSystemProxyToggle.Top := Round(3 * Scale);
-  btnSystemProxyToggle.Width := Round(102 * Scale);
-  btnSystemProxyToggle.Height := Round(22 * Scale);
-  btnSystemProxyToggle.Caption := 'Proxy';
-  btnSystemProxyToggle.OnClick := SystemProxyToggleClick;
-  btnSystemProxyToggle.ShowHint := True;
+  btnSystemProxyToggle := ModeButton(323, 'Proxy', SystemProxyToggleClick);
+  btnSystemProxyToggle.Name := 'btnSystemProxyToggle';
   btnSystemProxyToggle.Hint := 'System Proxy';
+  lbSystemProxyStatus := ModeStatus(323);
 
-  shpSystemProxyLamp := TShape.Create(Self);
-  shpSystemProxyLamp.Parent := paButtons;
-  shpSystemProxyLamp.Visible := False;
-  shpSystemProxyLamp.Shape := stCircle;
-  shpSystemProxyLamp.Left := btnSystemProxyToggle.Left + Round(10 * Scale);
-  shpSystemProxyLamp.Top := btnSystemProxyToggle.Top + Round(6 * Scale);
-  shpSystemProxyLamp.Width := Round(10 * Scale);
-  shpSystemProxyLamp.Height := Round(10 * Scale);
-  shpSystemProxyLamp.Pen.Color := clMaroon;
-  shpSystemProxyLamp.Brush.Color := clRed;  shpSystemProxyLamp.Hint := btnSystemProxyToggle.Hint;
-  shpSystemProxyLamp.ShowHint := True;
-  shpSystemProxyLamp.BringToFront;
-
-  btnTunToggle := TBitBtn.Create(Self);
-  btnTunToggle.Parent := paButtons;
-  btnTunToggle.Left := Round(323 * Scale);
-  btnTunToggle.Top := Round(28 * Scale);
-  btnTunToggle.Width := Round(102 * Scale);
-  btnTunToggle.Height := Round(22 * Scale);
-  btnTunToggle.Caption := 'TUN (LAN)';
-  btnTunToggle.OnClick := TunToggleClick;
-  btnTunToggle.ShowHint := True;
+  btnTunToggle := ModeButton(415, 'TUN', TunToggleClick);
+  btnTunToggle.Name := 'btnTunToggle';
   btnTunToggle.Hint := 'TUN mode (LAN preserved)';
+  lbTunStatus := ModeStatus(415);
 
-  shpTunLamp := TShape.Create(Self);
-  shpTunLamp.Parent := paButtons;
-  shpTunLamp.Visible := False;
-  shpTunLamp.Shape := stCircle;
-  shpTunLamp.Left := btnTunToggle.Left + Round(10 * Scale);
-  shpTunLamp.Top := btnTunToggle.Top + Round(6 * Scale);
-  shpTunLamp.Width := Round(10 * Scale);
-  shpTunLamp.Height := Round(10 * Scale);
-  shpTunLamp.Pen.Color := clMaroon;
-  shpTunLamp.Brush.Color := clRed;  shpTunLamp.Hint := btnTunToggle.Hint;
-  shpTunLamp.ShowHint := True;
-  shpTunLamp.BringToFront;
-
+  btnFlowFilter := ModeButton(507, 'Google AI', FlowFilterClick);
+  btnFlowFilter.Name := 'btnFlowExitFilter';
+  lbFlowFilter := ModeStatus(507);
+  tiFlowFilter := TTimer.Create(Self);
+  tiFlowFilter.Interval := 500;
+  tiFlowFilter.OnTimer := FlowFilterTick;
   UpdateNetworkIntegrationControls;
-end;
-function CreateNetworkLampGlyph(AColor: TColor): TBitmap;
-var
-  R: TRect;
-begin
-  Result := TBitmap.Create;
-  Result.SetSize(18, 18);
-  Result.Transparent := True;
-  Result.TransparentColor := clFuchsia;
-  Result.Canvas.Brush.Color := clFuchsia;
-  Result.Canvas.FillRect(Rect(0, 0, Result.Width, Result.Height));
-
-  R := Rect(3, 3, 15, 15);
-  Result.Canvas.Pen.Color := clWhite;
-  Result.Canvas.Brush.Color := clWhite;
-  Result.Canvas.Ellipse(R.Left, R.Top, R.Right, R.Bottom);
-
-  R := Rect(4, 4, 14, 14);
-  Result.Canvas.Pen.Color := clGray;
-  Result.Canvas.Brush.Color := AColor;
-  Result.Canvas.Ellipse(R.Left, R.Top, R.Right, R.Bottom);
-
-  Result.Canvas.Pen.Color := clWhite;
-  Result.Canvas.Brush.Color := clWhite;
-  Result.Canvas.Ellipse(6, 5, 9, 8);
+  FlowFilterTick(nil);
 end;
 
-procedure SetNetworkButtonLamp(Btn: TBitBtn; State: Integer);
-var
-  Bmp: TBitmap;
-  Color: TColor;
+procedure SetNetworkModeStatus(LabelControl: TLabel; State: Integer);
 begin
+  LabelControl.Font.Color := clGrayText;
   case State of
-    NI_ACTIVE: Color := clLime;
-    NI_STARTING, NI_STOPPING: Color := clOlive;
-    else Color := clRed;
+    NI_ACTIVE: begin LabelControl.Caption := 'On'; LabelControl.Font.Color := clWindowText end;
+    NI_STARTING: LabelControl.Caption := 'Starting...';
+    NI_STOPPING: LabelControl.Caption := 'Stopping...';
+    NI_ERROR: begin LabelControl.Caption := 'Error'; LabelControl.Font.Color := clMaroon end;
+    else LabelControl.Caption := 'Off';
   end;
-
-  Bmp := CreateNetworkLampGlyph(Color);
-  try
-    Btn.Glyph.Assign(Bmp);
-  finally
-    Bmp.Free;
-  end;
-  Btn.NumGlyphs := 1;
-  Btn.Layout := blGlyphLeft;
-  Btn.Spacing := 6;
-  Btn.Margin := 7;
+  LabelControl.Hint := LabelControl.Caption;
 end;
 
 procedure TTcp.UpdateNetworkIntegrationControls;
@@ -20318,18 +20333,8 @@ begin
   if not Assigned(btnSystemProxyToggle) then
     Exit;
 
-  btnSystemProxyToggle.Caption := 'Proxy';
-  btnTunToggle.Caption := 'TUN (LAN)';
-
-  SetNetworkButtonLamp(btnSystemProxyToggle, FSystemProxyState);
-  SetNetworkButtonLamp(btnTunToggle, FTunState);
-
-  btnSystemProxyToggle.Font.Style := [];
-  btnTunToggle.Font.Style := [];
-  if FSystemProxyState = NI_ACTIVE then
-    btnSystemProxyToggle.Font.Style := [fsBold];
-  if FTunState = NI_ACTIVE then
-    btnTunToggle.Font.Style := [fsBold];
+  SetNetworkModeStatus(lbSystemProxyStatus, FSystemProxyState);
+  SetNetworkModeStatus(lbTunStatus, FTunState);
 
   if Assigned(FMachineService) then
   begin
@@ -21272,6 +21277,8 @@ procedure TTcp.FormDestroy(Sender: TObject);
 var
   ini: TMemIniFile;
 begin
+  if Assigned(tiFlowFilter) then tiFlowFilter.Enabled := False;
+  FreeAndNil(FFlowFilter);
   if ExitCode = EXIT_NORMAL then
   begin
     if ConnectState > 0 then
