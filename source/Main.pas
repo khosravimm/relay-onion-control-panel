@@ -20262,9 +20262,13 @@ begin
   FFlowFilter.Snapshot(State, Text);
   FFlowLampOn := not FFlowLampOn;
   case State of
-    1, 4: if FFlowLampOn then btnFlowFilter.ImageIndex := 1
-          else btnFlowFilter.ImageIndex := 0;
-    2, 5: btnFlowFilter.ImageIndex := 2;
+    1: if FFlowLampOn then btnFlowFilter.ImageIndex := 1 else btnFlowFilter.ImageIndex := 0;
+    4: if FFlowLampOn then btnFlowFilter.ImageIndex := 3 else btnFlowFilter.ImageIndex := 0;
+    2: if FFlowFilter.UserTrafficReady then btnFlowFilter.ImageIndex := 2
+       else btnFlowFilter.ImageIndex := 1;
+    5: btnFlowFilter.ImageIndex := 4;
+    3: btnFlowFilter.ImageIndex := 5;
+    6: if FFlowLampOn then btnFlowFilter.ImageIndex := 6 else btnFlowFilter.ImageIndex := 0;
     else btnFlowFilter.ImageIndex := 0;
   end;
   P := Pos(' |', Text);
@@ -20280,16 +20284,16 @@ begin
       'US IPs | scan ', 'IPs | ', []), 'IPs | complete', 'IPs | done', []);
     4: begin
       if Text.StartsWith('Connecting to Tor') then lbFlowFilter.Caption := 'Waiting for Tor'
-      else lbFlowFilter.Caption := 'Precheck...';
+      else lbFlowFilter.Caption := 'Scanning...';
       lbFlowFilter.Font.Color := clGrayText;
     end;
     5: lbFlowFilter.Caption := 'Ready (Off)';
     6: begin
-      lbFlowFilter.Caption := 'Off | retry';
+      lbFlowFilter.Caption := 'Precheck retry';
       lbFlowFilter.Font.Color := clGrayText;
     end;
     3: begin
-      lbFlowFilter.Caption := 'Unavailable';
+      lbFlowFilter.Caption := 'Error | retry';
       lbFlowFilter.Font.Color := clMaroon;
     end;
     else begin
@@ -20297,6 +20301,8 @@ begin
       lbFlowFilter.Font.Color := clGrayText;
     end;
   end;
+  if (State = 2) and not FFlowFilter.UserTrafficReady then
+    lbFlowFilter.Caption := 'Activating';
   lbFlowFilter.Hint := Text;
   btnFlowFilter.Hint := 'Restrict Tor exits to verified US IPs for Google Flow' + sLineBreak + Text;
 end;
@@ -20367,6 +20373,10 @@ begin
   AddStatusLamp(clGray);
   AddStatusLamp(RGB(235, 175, 0));
   AddStatusLamp(RGB(35, 160, 70));
+  AddStatusLamp(RGB(30, 120, 225));
+  AddStatusLamp(RGB(0, 165, 180));
+  AddStatusLamp(RGB(200, 40, 45));
+  AddStatusLamp(RGB(235, 120, 0));
   btnFlowFilter.Images := lsFlowStatus;
   btnFlowFilter.ImageAlignment := Vcl.StdCtrls.iaLeft;
   btnFlowFilter.ImageMargins.Left := Round(4 * Scale);

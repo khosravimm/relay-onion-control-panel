@@ -68,6 +68,7 @@ type
       const Candidates: TArray<string>; Preflight: Boolean = False);
     procedure Activate;
     function Restricted: Boolean;
+    function UserTrafficReady: Boolean;
     procedure Stop;
     procedure TorStopped;
     function Active: Boolean;
@@ -173,6 +174,11 @@ begin
   TMonitor.Enter(FLock);
   try State := FState; MessageText := FMessage;
   finally TMonitor.Exit(FLock) end;
+end;
+
+function TFlowExitFilter.UserTrafficReady: Boolean;
+begin
+  Result := Restricted and (TInterlocked.CompareExchange(FUserReady, 0, 0) <> 0);
 end;
 
 function TFlowExitFilter.Active: Boolean;
